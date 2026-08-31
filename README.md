@@ -5,6 +5,7 @@
 ```powershell
 cd E:\QQfile\steam_login\gift-portal
 python -m pip install -r requirements.txt
+python -m playwright install chromium
 python server.py
 ```
 
@@ -13,6 +14,8 @@ python server.py
 `/gift` 是唯一可访问的应用路径；未带此前缀的页面和 API 会返回 `404`。接口使用 `/gift/api/...`。
 
 全球提货会在服务端验证账号密码；账号、密码和授权令牌不会保存到订单数据或返回给浏览器。
+
+全球账号登录实现已包含在 `global_login/` 目录，部署时无需额外复制 `pubg_cookie_getter_http.py`。默认使用 Playwright 生成 KRAFTON 登录所需的浏览器遥测，因此需要执行 `python -m playwright install chromium`。
 
 全球激活码数据库默认连接 `47.116.48.188:3306/gift_portal`。可用 `GIFT_PORTAL_DB_HOST`、`GIFT_PORTAL_DB_PORT`、`GIFT_PORTAL_DB_USER`、`GIFT_PORTAL_DB_PASSWORD` 和 `GIFT_PORTAL_DB_NAME` 覆盖连接配置。
 

@@ -3,3 +3,5 @@ __pycache__/
 pubg_cookie_http.log
 pubg_accounts.db
 gift_portal.log
+global_login/artifacts/
+global_login/*.log

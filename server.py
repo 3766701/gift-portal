@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -21,7 +20,6 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_PATH, encoding='utf-8'), logging.StreamHandler()],
 )
 logger = logging.getLogger('gift_portal')
-GLOBAL_LOGIN_GETTER_PATH = Path(r"E:\QQfile\pubg_cookie\pubg_cookie_getter_http.py")
 GLOBAL_LOGIN_GETTER_CLASS = None
 GLOBAL_LOGIN_IMPORT_LOCK = threading.Lock()
 EMAIL_PATTERN = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
@@ -69,29 +67,14 @@ def has_gift_prefix(request_path):
 def get_global_login_info(username, password):
     """Authenticate once through the existing HTTP getter without persisting credentials."""
     global GLOBAL_LOGIN_GETTER_CLASS
-    if not GLOBAL_LOGIN_GETTER_PATH.is_file():
-        raise RuntimeError("全球账号登录服务未配置。")
-
     with GLOBAL_LOGIN_IMPORT_LOCK:
         if GLOBAL_LOGIN_GETTER_CLASS is None:
-            # The reused module and its dependencies configure file loggers at
-            # import time. Disable file handlers for this isolated import so
-            # credentials and authorization details never reach a portal log.
-            root_logger = logging.getLogger()
-            if not root_logger.handlers:
-                root_logger.addHandler(logging.NullHandler())
-            spec = importlib.util.spec_from_file_location("pubg_cookie_getter_http", GLOBAL_LOGIN_GETTER_PATH)
-            if spec is None or spec.loader is None:
-                raise RuntimeError("全球账号登录服务加载失败。")
-            module = importlib.util.module_from_spec(spec)
-            file_handler = logging.FileHandler
-            logging.FileHandler = lambda *args, **kwargs: logging.NullHandler()
-            try:
-                spec.loader.exec_module(module)
-            finally:
-                logging.FileHandler = file_handler
-            module.logger.disabled = True
-            GLOBAL_LOGIN_GETTER_CLASS = module.PUBGCookieGetter
+            from global_login.pubg_cookie_getter_http import PUBGCookieGetter, logger as global_login_logger
+
+            # The bundled module logs account-level diagnostics by default.
+            # Portal requests must not persist account identifiers or tokens.
+            global_login_logger.disabled = True
+            GLOBAL_LOGIN_GETTER_CLASS = PUBGCookieGetter
 
     getter = GLOBAL_LOGIN_GETTER_CLASS()
     try:
