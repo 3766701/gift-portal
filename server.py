@@ -61,6 +61,11 @@ def application_path(request_path):
     return path
 
 
+def has_gift_prefix(request_path):
+    path = urlparse(request_path).path
+    return path == '/gift' or path.startswith('/gift/')
+
+
 def get_global_login_info(username, password):
     """Authenticate once through the existing HTTP getter without persisting credentials."""
     global GLOBAL_LOGIN_GETTER_CLASS
@@ -143,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
         self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
+        if not has_gift_prefix(self.path):
+            return self.send_json({'message': '页面不存在。'}, 404)
         path = application_path(self.path)
         if path == '/api/health': return self.send_json({'ok': True, 'service': 'drop-zone'})
         if path == '/api/config':
@@ -169,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
         content_type = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8'}.get(file_path.suffix, 'application/octet-stream')
         body = file_path.read_bytes(); self.send_response(200); self.send_header('Content-Type', content_type); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
+        if not has_gift_prefix(self.path):
+            return self.send_json({'message': '接口不存在。'}, 404)
         path = application_path(self.path)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
         if path == '/api/redeem' and is_production():

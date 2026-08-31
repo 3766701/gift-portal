@@ -8,9 +8,9 @@ python -m pip install -r requirements.txt
 python server.py
 ```
 
-浏览器打开 `http://127.0.0.1:8000/`。Steam 演示激活码：`TAECG5XVAQ8XQNQY414`、`DEMO2026DROP001`。数据只保存在当前 Python 进程内。
+浏览器打开 `http://127.0.0.1:8000/gift/`。Steam 演示激活码：`TAECG5XVAQ8XQNQY414`、`DEMO2026DROP001`。数据只保存在当前 Python 进程内。
 
-也可通过 `http://127.0.0.1:8000/gift/` 在 `/gift` 子路径部署；接口会自动使用 `/gift/api/...`。
+`/gift` 是唯一可访问的应用路径；未带此前缀的页面和 API 会返回 `404`。接口使用 `/gift/api/...`。
 
 全球提货会在服务端验证账号密码；账号、密码和授权令牌不会保存到订单数据或返回给浏览器。
 
