@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import logging
 import os
 from pathlib import Path
+import socket
 import threading
 from urllib.parse import unquote, urlparse
 import json, re, secrets
@@ -37,10 +38,6 @@ GLOBAL_CODE_DB_CONFIG = {
 }
 GIFTS = {'TAECG5XVAQ8XQNQY414': {'reward': '战术补给箱 × 1', 'used': False}, 'DEMO2026DROP001': {'reward': '补给券 × 3', 'used': False}}
 ORDERS = {}
-
-
-def is_production():
-    return os.environ.get('GIFT_PORTAL_ENV', 'development').lower() == 'production'
 
 
 def normalize_activation_code(raw_code):
@@ -126,6 +123,27 @@ def consume_global_code(code, order_id):
     finally:
         connection.close()
 
+
+def get_feature_config():
+    """Read feature switches from MySQL, preferring this machine's override."""
+    if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
+        raise RuntimeError('Feature configuration database is unavailable.')
+    hostname = socket.gethostname()
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT steam_enabled, qr_enabled FROM portal_feature_config '
+                'WHERE scope IN (%s, %s) ORDER BY scope = %s DESC LIMIT 1',
+                (hostname, 'default', hostname),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return {'steam': False, 'qr': False}
+    return {'steam': bool(row[0]), 'qr': bool(row[1])}
+
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -136,8 +154,11 @@ class Handler(BaseHTTPRequestHandler):
         path = application_path(self.path)
         if path == '/api/health': return self.send_json({'ok': True, 'service': 'drop-zone'})
         if path == '/api/config':
-            production = is_production()
-            return self.send_json({'environment': 'production' if production else 'development', 'features': {'steam': not production, 'qr': not production}})
+            try:
+                return self.send_json({'features': get_feature_config()})
+            except Exception:
+                logger.exception('Feature configuration query failed')
+                return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
         match = re.fullmatch(r'/api/orders/([^/]+)', path)
         if match:
             code = normalize_activation_code(unquote(match.group(1)))
@@ -163,8 +184,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'message': '接口不存在。'}, 404)
         path = application_path(self.path)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
-        if path == '/api/redeem' and is_production():
-            return self.send_json({'message': '当前环境未启用 Steam 提货。'}, 403)
+        if path == '/api/redeem':
+            try:
+                if not get_feature_config()['steam']:
+                    return self.send_json({'message': '当前未启用 Steam 提货。'}, 403)
+            except Exception:
+                logger.exception('Feature configuration query failed')
+                return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
         try: data = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
         except (ValueError, json.JSONDecodeError): return self.send_json({'message': '请求数据格式错误。'}, 400)
         code = normalize_activation_code(data.get('code', ''))

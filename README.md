@@ -19,6 +19,6 @@ python server.py
 
 全球激活码数据库默认连接 `47.116.48.188:3306/gift_portal`。可用 `GIFT_PORTAL_DB_HOST`、`GIFT_PORTAL_DB_PORT`、`GIFT_PORTAL_DB_USER`、`GIFT_PORTAL_DB_PASSWORD` 和 `GIFT_PORTAL_DB_NAME` 覆盖连接配置。
 
-默认环境为 `development`，全球提货、Steam 提货和令牌扫码提货均启用。生产环境启动前设置 `GIFT_PORTAL_ENV=production`，页面会禁用 Steam 提货与令牌扫码提货，后端也会拒绝 Steam 提货接口。
+提货方式由数据库表 `portal_feature_config` 控制，不依赖环境变量。`default` 配置用于生产服务器，默认关闭 Steam 提货和令牌扫码；可为开发机主机名新增一条配置以启用这两项。后端会同步拒绝已关闭的 Steam 提货接口。
 
 数据库表结构与核销 DDL 见 [docs/database.md](docs/database.md)。
