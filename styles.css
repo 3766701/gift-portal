@@ -6,7 +6,6 @@
 img{padding:0;border:0}
 .layui-progress-big,.layui-progress-big .layui-progress-bar{height:36px;line-height:36px}
 body{background-color:rgba(238,238,238,.2)}
-.paste{position:absolute;right:10%;top:0;height:38px;border:0;border-left:1px solid #e6e6e6;background:#fff;color:#1aa094;padding:0 10px;cursor:pointer}
 .result,.qr-result{min-height:24px;font-size:17px;color:red}
 .lower-card{margin-top:50px;min-height:48px}
 .claim-notice{margin:12px 15px 15px;padding:10px 12px;color:#f00;font-size:14px;line-height:24px}
@@ -16,4 +15,4 @@ body{background-color:rgba(238,238,238,.2)}
 .qr-box:after{content:'演示二维码';position:absolute;left:45px;right:45px;top:106px;background:white;text-align:center;color:#333}
 @media(max-width:1199px){.layui-container{width:970px}}
 @media(max-width:991px){.layui-container{width:750px}}
-@media(max-width:767px){.layui-container{width:auto}.layui-form-label{width:90px}.layui-input-block{margin-left:120px}.layui-input{width:90%}.paste{right:10%}}
+@media(max-width:767px){.layui-container{width:auto}.layui-form-label{width:90px}.layui-input-block{margin-left:120px}.layui-input{width:90%}}
