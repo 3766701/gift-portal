@@ -10,6 +10,8 @@ python server.py
 
 浏览器打开 `http://127.0.0.1:8000/`。Steam 演示激活码：`TAECG5XVAQ8XQNQY414`、`DEMO2026DROP001`。数据只保存在当前 Python 进程内。
 
+也可通过 `http://127.0.0.1:8000/gift/` 在 `/gift` 子路径部署；接口会自动使用 `/gift/api/...`。
+
 全球提货会在服务端验证账号密码；账号、密码和授权令牌不会保存到订单数据或返回给浏览器。
 
 全球激活码数据库默认连接 `47.116.48.188:3306/gift_portal`。可用 `GIFT_PORTAL_DB_HOST`、`GIFT_PORTAL_DB_PORT`、`GIFT_PORTAL_DB_USER`、`GIFT_PORTAL_DB_PASSWORD` 和 `GIFT_PORTAL_DB_NAME` 覆盖连接配置。

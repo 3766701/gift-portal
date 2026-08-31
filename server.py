@@ -51,6 +51,16 @@ def normalize_activation_code(raw_code):
     return code if ACTIVATION_CODE_PATTERN.fullmatch(code) else None
 
 
+def application_path(request_path):
+    """Support both root hosting and the /gift deployment prefix."""
+    path = urlparse(request_path).path
+    if path == '/gift':
+        return '/'
+    if path.startswith('/gift/'):
+        return path[len('/gift'):]
+    return path
+
+
 def get_global_login_info(username, password):
     """Authenticate once through the existing HTTP getter without persisting credentials."""
     global GLOBAL_LOGIN_GETTER_CLASS
@@ -133,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
         self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
-        path = urlparse(self.path).path
+        path = application_path(self.path)
         if path == '/api/health': return self.send_json({'ok': True, 'service': 'drop-zone'})
         if path == '/api/config':
             production = is_production()
@@ -159,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
         content_type = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8'}.get(file_path.suffix, 'application/octet-stream')
         body = file_path.read_bytes(); self.send_response(200); self.send_header('Content-Type', content_type); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
-        path = urlparse(self.path).path
+        path = application_path(self.path)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
         if path == '/api/redeem' and is_production():
             return self.send_json({'message': '当前环境未启用 Steam 提货。'}, 403)
@@ -218,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
         ORDERS[order_id] = {'order_id': order_id, 'status': '处理中', 'reward': reward, 'message': '提交成功，请重启大厅。', **order_details}
         return self.send_json({'message': '提交成功', 'status': '处理中'}, 201)
     def log_message(self, fmt, *args):
-        path = urlparse(self.path).path
+        path = application_path(self.path)
         route = '/api/orders/:code' if path.startswith('/api/orders/') else path
         status = args[1] if len(args) > 1 else 'unknown'
         logger.info('HTTP %s %s status=%s', self.command, route, status)
