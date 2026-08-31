@@ -14,6 +14,13 @@ except ImportError:
     pymysql = None
 
 ROOT = Path(__file__).parent
+LOG_PATH = ROOT / 'gift_portal.log'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[logging.FileHandler(LOG_PATH, encoding='utf-8'), logging.StreamHandler()],
+)
+logger = logging.getLogger('gift_portal')
 GLOBAL_LOGIN_GETTER_PATH = Path(r"E:\QQfile\pubg_cookie\pubg_cookie_getter_http.py")
 GLOBAL_LOGIN_GETTER_CLASS = None
 GLOBAL_LOGIN_IMPORT_LOCK = threading.Lock()
@@ -139,6 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 code_status, reward = get_global_code_status(code)
             except Exception:
+                logger.exception('Activation-code database query failed')
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
             if code_status == 'missing':
                 return self.send_json({'message': '未找到该激活码。'}, 404)
@@ -170,6 +178,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 code_status, reward = get_global_code_status(code)
             except Exception:
+                logger.exception('Activation-code database query failed')
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
             if code_status == 'missing':
                 return self.send_json({'message': '激活码不存在或已失效。'}, 404)
@@ -186,6 +195,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 login_info = get_global_login_info(username, password)
             except Exception:
+                logger.warning('Global login service failed')
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             if not login_info or not login_info.get('authorization'):
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)
@@ -198,6 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 claimed = consume_global_code(code, order_id)
             except Exception:
+                logger.exception('Activation-code database claim failed')
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
             if not claimed:
                 return self.send_json({'message': '该激活码已经使用过了。'}, 409)
@@ -206,9 +217,13 @@ class Handler(BaseHTTPRequestHandler):
             reward = gift['reward']
         ORDERS[order_id] = {'order_id': order_id, 'status': '处理中', 'reward': reward, 'message': '提交成功，请重启大厅。', **order_details}
         return self.send_json({'message': '提交成功', 'status': '处理中'}, 201)
-    def log_message(self, fmt, *args): print(f'[{datetime.now():%H:%M:%S}] {fmt % args}')
+    def log_message(self, fmt, *args):
+        path = urlparse(self.path).path
+        route = '/api/orders/:code' if path.startswith('/api/orders/') else path
+        status = args[1] if len(args) > 1 else 'unknown'
+        logger.info('HTTP %s %s status=%s', self.command, route, status)
 
 if __name__ == '__main__':
     port = int(os.environ.get('GIFT_PORTAL_PORT', '8000'))
-    print(f'DROP//ZONE running at http://127.0.0.1:{port}')
+    logger.info('DROP//ZONE running at http://127.0.0.1:%s', port)
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()

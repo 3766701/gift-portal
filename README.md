@@ -4,6 +4,7 @@
 
 ```powershell
 cd E:\QQfile\steam_login\gift-portal
+python -m pip install -r requirements.txt
 python server.py
 ```
 

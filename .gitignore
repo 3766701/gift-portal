@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 pubg_cookie_http.log
 pubg_accounts.db
+gift_portal.log
