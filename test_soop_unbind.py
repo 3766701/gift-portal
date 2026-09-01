@@ -38,6 +38,12 @@ class SoopUnbindTests(unittest.TestCase):
             'stage=oidc_token http_status=400',
         )
 
+    def test_global_login_error_summary_identifies_oidc_authorization(self):
+        self.assertEqual(
+            server.summarize_global_login_error('OIDC authorization failed: HTTP 429 rate limited'),
+            'stage=oidc_authorize http_status=429',
+        )
+
     def test_redemption_trace_context_masks_code_and_account(self):
         self.assertEqual(
             server.redemption_trace_context('95120230F67931A27B58', '3766701@qq.com'),

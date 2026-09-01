@@ -883,17 +883,23 @@ class PUBGCookieGetter:
                 no_sec_cpt_wait=self.no_sec_cpt_wait,
                 no_sensor_interleave=self.no_sensor_interleave,
             )
-            token = pubg_http.oidc_authorize_and_token(
-                s,
-                oidc_args,
-                akamai_js_url,
-                self.redirect_uri,
-                prompt=None if self.no_prompt_consent else "consent",
-            )
-            foc = pubg_http.foc_signin(s, token["access_token"])
+            try:
+                token = pubg_http.oidc_authorize_and_token(
+                    s,
+                    oidc_args,
+                    akamai_js_url,
+                    self.redirect_uri,
+                    prompt=None if self.no_prompt_consent else "consent",
+                )
+            except Exception as exc:
+                raise RuntimeError(f"OIDC authorization failed: {exc}") from exc
+            try:
+                foc = pubg_http.foc_signin(s, token["access_token"])
+            except Exception as exc:
+                raise RuntimeError(f"FOC signin failed: {exc}") from exc
             foc_token = foc.get("focToken") if isinstance(foc, dict) else None
             if not foc_token:
-                raise RuntimeError(f"FOC 响应中没有 focToken: {str(foc)[:300]}")
+                raise RuntimeError("FOC signin failed: missing focToken")
 
             accounts = foc.get("accounts") if isinstance(foc, dict) else None
             account0 = accounts[0] if isinstance(accounts, list) and accounts else {}

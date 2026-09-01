@@ -181,7 +181,7 @@ def summarize_global_login_error(error):
         stage = 'foc_signin'
     elif lowered.startswith('oidc token failed'):
         stage = 'oidc_token'
-    elif lowered.startswith('oidc authorize') or lowered.startswith('oidc unexpected'):
+    elif lowered.startswith('oidc authorize') or lowered.startswith('oidc authorization failed') or lowered.startswith('oidc unexpected'):
         stage = 'oidc_authorize'
     elif lowered.startswith('krafton 登录失败'):
         stage = 'krafton_login'
