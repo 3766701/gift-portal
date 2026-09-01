@@ -120,7 +120,7 @@ def get_global_code_status(code):
         with connection.cursor() as cursor:
             # Values are always bound parameters, never interpolated SQL text.
             cursor.execute(
-                'SELECT reward, used_at IS NOT NULL FROM activation_codes WHERE code = %s',
+                'SELECT reward, used_at FROM activation_codes WHERE code = %s',
                 (code,),
             )
             row = cursor.fetchone()
@@ -128,7 +128,7 @@ def get_global_code_status(code):
         connection.close()
     if row is None:
         return 'missing', None
-    return ('used' if row[1] else 'available'), row[0]
+    return ('used' if row[1] else 'available'), row[0], row[1]
 
 
 def consume_global_code(code, order_id):
@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
             if code is None:
                 return self.send_json({'message': '激活码格式错误。'}, 400)
             try:
-                code_status, reward = get_global_code_status(code)
+                code_status, reward, used_at = get_global_code_status(code)
             except Exception:
                 logger.exception('Activation-code database query failed')
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
@@ -202,7 +202,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'message': '未找到该激活码。'}, 404)
             status = '已领取' if code_status == 'used' else '未领取'
             message = '提货成功，请重启大厅。' if code_status == 'used' else '该激活码未领取。'
-            return self.send_json({'code': code, 'status': status, 'reward': reward, 'message': message})
+            return self.send_json({
+                'code': code,
+                'status': status,
+                'reward': reward,
+                'used_at': used_at.strftime('%Y-%m-%d %H:%M:%S') if used_at else None,
+                'message': message,
+            })
         relative = 'index.html' if path in ('', '/') else path.lstrip('/')
         file_path = (ROOT / relative).resolve()
         if ROOT.resolve() not in file_path.parents or not file_path.is_file(): return self.send_json({'message': '页面不存在。'}, 404)
@@ -236,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
             if not EMAIL_PATTERN.fullmatch(username):
                 return self.send_json({'message': '请输入正确的邮箱格式。'}, 400)
             try:
-                code_status, reward = get_global_code_status(code)
+                code_status, reward, _ = get_global_code_status(code)
             except Exception:
                 logger.exception('Activation-code database query failed')
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
