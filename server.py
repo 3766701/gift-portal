@@ -58,6 +58,12 @@ SYSTEM_LOG_MAX_MESSAGE_LENGTH = 2_000
 SYSTEM_LOG_MAX_TRACE_LENGTH = 12_000
 _SYSTEM_LOG_WRITE_GUARD = threading.local()
 _SYSTEM_LOG_SECRET_PATTERN = re.compile(r'(?i)(cookie|password|authorization|bearer|authticket|userticket|bbsticket)\s*[=:]\s*[^\s,;\'"}]+')
+SOOP_COOKIE_NAME_MAP = {
+    'userticket': 'UserTicket', 'user_ticket': 'UserTicket',
+    'authticket': 'AuthTicket', 'auth_ticket': 'AuthTicket',
+    'bbsticket': 'BbsTicket', 'bbs_ticket': 'BbsTicket',
+    'bbssaveticket': 'BbsSaveTicket', 'bbs_save_ticket': 'BbsSaveTicket',
+}
 
 
 def redact_log_text(value, limit):
@@ -325,14 +331,15 @@ def normalize_soop_cookie(raw_cookie):
     if not cookie.startswith('{'):
         return cookie
     try:
-        cookie_values = json.loads(cookie)
+        # Some export tools escape underscores, although ``\_`` is not valid JSON.
+        cookie_values = json.loads(cookie.replace(r'\_', '_'))
     except json.JSONDecodeError as exc:
         raise ValueError('SOOP Cookie JSON 格式错误。') from exc
     if not isinstance(cookie_values, dict):
         raise ValueError('SOOP Cookie JSON 必须是对象。')
     normalized = []
     for name, value in cookie_values.items():
-        name = str(name).strip()
+        name = SOOP_COOKIE_NAME_MAP.get(str(name).strip().casefold(), str(name).strip())
         value = '' if value is None else str(value).strip()
         if name:
             normalized.append(f'{name}={value}')
