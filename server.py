@@ -7,6 +7,7 @@ import socket
 import threading
 from urllib.parse import unquote, urlparse
 import json, re, secrets
+from global_login.soop_drops_http import DropsClient, load_cookie_file
 
 try:
     import pymysql
@@ -182,6 +183,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'message': '页面不存在。'}, 404)
         path = application_path(self.path)
         if path == '/api/health': return self.send_json({'ok': True, 'service': 'drop-zone'})
+        if path == '/api/soop/inventory':
+            try:
+                cookie_file = os.environ.get('SOOP_COOKIE_FILE', str(ROOT.parent / 'soop_cookie_new.txt'))
+                return self.send_json(DropsClient(load_cookie_file(cookie_file)).inventory())
+            except Exception as exc:
+                logger.warning('SOOP inventory query failed: %s', exc)
+                return self.send_json({'message': 'SOOP 礼包库存查询失败。'}, 502)
         if path == '/api/config':
             try:
                 return self.send_json({'features': get_feature_config()})
@@ -218,6 +226,18 @@ class Handler(BaseHTTPRequestHandler):
         if not has_gift_prefix(self.path):
             return self.send_json({'message': '接口不存在。'}, 404)
         path = application_path(self.path)
+        if path == '/api/soop/claim':
+            try: data = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+            except (ValueError, json.JSONDecodeError): return self.send_json({'message': '请求数据格式错误。'}, 400)
+            if not isinstance(data, dict) or not data.get('itemCodeIdx') or data.get('confirm') is not True:
+                return self.send_json({'message': '领取需要 itemCodeIdx 和 confirm=true。'}, 400)
+            try:
+                cookie_file = os.environ.get('SOOP_COOKIE_FILE', str(ROOT.parent / 'soop_cookie_new.txt'))
+                result = DropsClient(load_cookie_file(cookie_file)).claim(data['itemCodeIdx'], confirm=True)
+                return self.send_json(result)
+            except Exception as exc:
+                logger.warning('SOOP reward claim failed: %s', exc)
+                return self.send_json({'message': 'SOOP 礼包领取失败。'}, 502)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
         if path == '/api/redeem':
             try:
