@@ -46,6 +46,35 @@ def normalize_activation_code(raw_code):
     return code if ACTIVATION_CODE_PATTERN.fullmatch(code) else None
 
 
+def mask_value(value, prefix=3, suffix=2):
+    """Keep request diagnostics useful without persisting full user identifiers."""
+    value = str(value).strip()
+    if not value:
+        return ''
+    if len(value) <= prefix + suffix:
+        return '*' * len(value)
+    return f'{value[:prefix]}***{value[-suffix:]}'
+
+
+def mask_email(value):
+    value = str(value).strip()
+    if '@' not in value:
+        return mask_value(value)
+    local, domain = value.rsplit('@', 1)
+    return f'{mask_value(local)}@{domain}'
+
+
+def request_log_parameters(path, data):
+    """Return the permitted, masked request fields; passwords are never logged."""
+    parameters = {'code': mask_value(data.get('code', ''), prefix=4, suffix=4)}
+    if path == '/api/redeem/global':
+        parameters['username'] = mask_email(data.get('username', ''))
+    elif path == '/api/redeem':
+        parameters['player_id'] = mask_value(data.get('player_id', ''))
+        parameters['player_name'] = mask_value(data.get('player_name', ''))
+    return parameters
+
+
 def application_path(request_path):
     """Support both root hosting and the /gift deployment prefix."""
     path = urlparse(request_path).path
@@ -193,6 +222,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
         try: data = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
         except (ValueError, json.JSONDecodeError): return self.send_json({'message': '请求数据格式错误。'}, 400)
+        if not isinstance(data, dict):
+            return self.send_json({'message': '请求数据格式错误。'}, 400)
+        logger.info('Request parameters route=%s parameters=%s', path, json.dumps(request_log_parameters(path, data), ensure_ascii=False))
         code = normalize_activation_code(data.get('code', ''))
         if code is None:
             return self.send_json({'message': '激活码格式错误。'}, 400)

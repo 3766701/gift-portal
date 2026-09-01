@@ -17,6 +17,8 @@ python server.py
 
 全球账号登录实现已包含在 `global_login/` 目录，部署时无需额外复制 `pubg_cookie_getter_http.py`。默认使用 Playwright 生成 KRAFTON 登录所需的浏览器遥测，因此需要执行 `python -m playwright install chromium`。
 
+后端请求审计日志写入 `gift_portal.log`：激活码、邮箱和账号仅记录脱敏值；密码、授权令牌和完整激活码不会写入日志。
+
 全球激活码数据库默认连接 `47.116.48.188:3306/gift_portal`。可用 `GIFT_PORTAL_DB_HOST`、`GIFT_PORTAL_DB_PORT`、`GIFT_PORTAL_DB_USER`、`GIFT_PORTAL_DB_PASSWORD` 和 `GIFT_PORTAL_DB_NAME` 覆盖连接配置。
 
 提货方式由数据库表 `portal_feature_config` 控制，不依赖环境变量。`default` 配置用于生产服务器，默认关闭 Steam 提货和令牌扫码；可为开发机主机名新增一条配置以启用这两项。后端会同步拒绝已关闭的 Steam 提货接口。
