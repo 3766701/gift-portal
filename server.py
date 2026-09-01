@@ -127,7 +127,7 @@ def get_global_code_status(code):
     finally:
         connection.close()
     if row is None:
-        return 'missing', None
+        return 'missing', None, None
     return ('used' if row[1] else 'available'), row[0], row[1]
 
 
