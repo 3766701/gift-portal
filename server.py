@@ -317,6 +317,30 @@ def parse_pagination(request_path):
     return page, page_size
 
 
+def normalize_soop_cookie(raw_cookie):
+    """Accept a browser Cookie header or a JSON object exported by a cookie tool."""
+    cookie = str(raw_cookie or '').strip()
+    if not cookie:
+        return ''
+    if not cookie.startswith('{'):
+        return cookie
+    try:
+        cookie_values = json.loads(cookie)
+    except json.JSONDecodeError as exc:
+        raise ValueError('SOOP Cookie JSON 格式错误。') from exc
+    if not isinstance(cookie_values, dict):
+        raise ValueError('SOOP Cookie JSON 必须是对象。')
+    normalized = []
+    for name, value in cookie_values.items():
+        name = str(name).strip()
+        value = '' if value is None else str(value).strip()
+        if name and value:
+            normalized.append(f'{name}={value}')
+    if not normalized:
+        raise ValueError('SOOP Cookie JSON 中没有可用字段。')
+    return '; '.join(normalized)
+
+
 def parse_inventory_import(text):
     entries = []
     for line_number, raw_line in enumerate(str(text).splitlines(), start=1):
@@ -327,8 +351,9 @@ def parse_inventory_import(text):
         fields = [field.strip() for field in line.split(separator)]
         if len(fields) != 5:
             raise ValueError(f'第 {line_number} 行格式错误，应为 5 列。')
-        created_by, account_name, product_name, raw_indexes, cookie = fields
+        created_by, account_name, product_name, raw_indexes, raw_cookie = fields
         item_code_idxs = normalize_item_code_indexes(raw_indexes)
+        cookie = normalize_soop_cookie(raw_cookie)
         if not all((created_by, account_name, product_name, item_code_idxs, cookie)):
             raise ValueError(f'第 {line_number} 行有空字段或 itemCodeIdx 格式错误。')
         if any(len(value) > limit for value, limit in ((created_by, 128), (account_name, 128), (product_name, 255), (item_code_idxs, 2048))):
@@ -819,7 +844,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'message': '请求数据格式错误。'}, 400)
             created_by = str(data.get('created_by', '')).strip()
             account_name = str(data.get('soop_account_name', '')).strip()
-            cookie = str(data.get('soop_cookie', '')).strip()
+            try:
+                cookie = normalize_soop_cookie(data.get('soop_cookie', ''))
+            except ValueError as exc:
+                return self.send_json({'message': str(exc)}, 400)
             product_name = str(data.get('product_name', '')).strip()
             item_code_idxs = normalize_item_code_indexes(data.get('item_code_idxs', ''))
             if not all((created_by, account_name, cookie, product_name, item_code_idxs)):

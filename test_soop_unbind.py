@@ -26,6 +26,17 @@ class Session:
 
 
 class SoopUnbindTests(unittest.TestCase):
+    def test_inventory_import_normalizes_json_cookie(self):
+        entries = server.parse_inventory_import(
+            '张三|soop_account|PUBG 补给箱|111198867|'
+            '{"UserTicket":"user-ticket","AuthTicket":"auth-ticket",'
+            '"BbsTicket":"bbs-ticket","BbsSaveTicket":""}'
+        )
+        self.assertEqual(
+            entries[0][2],
+            'UserTicket=user-ticket; AuthTicket=auth-ticket; BbsTicket=bbs-ticket',
+        )
+
     def test_business_error_uses_error_level(self):
         with self.assertLogs('gift_portal', level='ERROR') as captured:
             server.log_business_error('SOOP inventory mapping missing')
