@@ -337,11 +337,37 @@ def classify_steam_token(token: str) -> str:
     return "unknown"
 
 
+class SteamScopedSession(requests.Session):
+    """Route Steam hosts through the supplied proxy; keep Krafton/KID direct."""
+
+    STEAM_HOSTS = {
+        "api.steampowered.com",
+        "login.steampowered.com",
+        "steamcommunity.com",
+        "store.steampowered.com",
+    }
+
+    def __init__(self, proxy: str | None = None):
+        super().__init__()
+        self.steam_proxy = proxy
+        self.trust_env = False
+
+    def request(self, method, url, **kwargs):
+        host = (urlparse(url).hostname or "").lower()
+        if self.steam_proxy and (
+            host in self.STEAM_HOSTS
+            or host.endswith(".steampowered.com")
+            or host.endswith(".steamcommunity.com")
+        ):
+            kwargs["proxies"] = {"http": self.steam_proxy, "https": self.steam_proxy}
+        else:
+            kwargs["proxies"] = {}
+        return super().request(method, url, **kwargs)
+
+
 def make_session(proxy: str | None = None) -> requests.Session:
-    s = requests.Session()
+    s = SteamScopedSession(proxy)
     s.headers.update({"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
-    if proxy:
-        s.proxies.update({"http": proxy, "https": proxy})
     return s
 
 
@@ -1645,7 +1671,7 @@ def login_steam_to_kid_session(
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 session = make_session(proxy)
-                prewarm_akamai_like_pubg_cookie(session, proxy=proxy)
+                prewarm_akamai_like_pubg_cookie(session, proxy=None)
                 oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
                 steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
                 login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)

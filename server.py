@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qs, unquote, urlparse
 import json, re, secrets
+import requests
 from global_login.soop_drops_http import DropsClient
 
 try:
@@ -592,7 +593,10 @@ def get_global_login_info(username, password, soop_cookie):
             global_login_logger.disabled = True
             GLOBAL_LOGIN_GETTER_CLASS = PUBGCookieGetter
 
-    getter = GLOBAL_LOGIN_GETTER_CLASS()
+        getter = GLOBAL_LOGIN_GETTER_CLASS()
+    # KID/global-account redemption is intentionally direct.  The QG proxy is
+    # reserved for the Steam OAuth flow in get_steam_login_info().
+    getter.http_proxy = None
     try:
         with krafton_login.suppress_artifact_persistence():
             login_info = getter.get_authorization_info(
@@ -614,6 +618,7 @@ def get_global_login_info(username, password, soop_cookie):
 def get_steam_login_info(username, password, steam_token, soop_cookie):
     """Authenticate Steam into KRAFTON, then attach the selected SOOP account."""
     from global_login import krafton_pure_http_login as krafton_login
+    from global_login.qg_proxy import QGProxyError, fetch_proxy
     from global_login import steam_kid_login
     from global_login.pubg_cookie_getter_http import (
         bind_soop_to_session,
@@ -621,9 +626,26 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
         unbind_soop_if_linked,
     )
 
-    session, steam_info = steam_kid_login.login_steam_to_kid_session(
-        username, password, steam_token, os.environ.get('GIFT_PORTAL_HTTP_PROXY') or None,
-    )
+    fallback_proxy = os.environ.get('GIFT_PORTAL_HTTP_PROXY') or None
+    proxy = fallback_proxy
+    qg_selected = False
+    if os.environ.get('GIFT_PORTAL_QG_PROXY_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}:
+        try:
+            proxy = fetch_proxy()
+            qg_selected = True
+            proxy_host = proxy.rsplit('@', 1)[-1].rsplit('://', 1)[-1]
+            logger.info('QG Steam proxy selected host=%s', proxy_host)
+        except QGProxyError as exc:
+            logger.warning('QG Steam proxy unavailable; using configured fallback: %s', exc)
+    try:
+        session, steam_info = steam_kid_login.login_steam_to_kid_session(username, password, steam_token, proxy)
+    except requests.exceptions.ProxyError as exc:
+        if not qg_selected:
+            raise
+        logger.warning('QG Steam proxy connection failed; retrying with fallback=%s', bool(fallback_proxy))
+        session, steam_info = steam_kid_login.login_steam_to_kid_session(
+            username, password, steam_token, fallback_proxy,
+        )
     profile_response = krafton_login.profile(session)
     profile_body = krafton_login.try_json(profile_response)
     if profile_response.status_code != 200:
@@ -1173,9 +1195,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(response, status)
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
                 return self.send_json({'message': global_login_failure_message(exc)}, 503)
+            except requests.exceptions.ProxyError:
+                log_business_error(f'Proxy connection failed during redemption {trace_context}', exc_info=True)
+                return self.send_json({'message': '代理连接失败，请检查代理配置后重试。'}, 503)
             except Exception:
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
-                return self.send_json({'message': '全球账号授权流程失败，请稍后重试。'}, 503)
+                message = (
+                    'Steam 提货流程失败，请稍后重试。'
+                    if path == '/api/redeem'
+                    else '全球账号授权流程失败，请稍后重试。'
+                )
+                return self.send_json({'message': message}, 503)
             if not login_info or login_info.get('status') != 'success':
                 log_business_error(f'Global login did not complete KRAFTON/SOOP connection {trace_context}')
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)

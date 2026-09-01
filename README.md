@@ -13,6 +13,8 @@ python server.py
 
 `/gift` 是唯一可访问的应用路径；未带此前缀的页面和 API 会返回 `404`。接口使用 `/gift/api/...`。
 
+Steam 提货默认在每次登录前从 QG overseas `/get` 接口提取短效 HTTP 代理，使用返回的 `data[0].server`。可用 `GIFT_PORTAL_QG_PROXY_KEY` 覆盖 Key；若 QG 产品启用了 Authpwd，设置 `GIFT_PORTAL_QG_PROXY_PASSWORD`（用户名默认使用 Key，也可用 `GIFT_PORTAL_QG_PROXY_USERNAME` 覆盖）。设置 `GIFT_PORTAL_QG_PROXY_ENABLED=0` 可关闭；接口失败时回退到 `GIFT_PORTAL_HTTP_PROXY`，未配置则直连。
+
 全球提货和 Steam 提货会在服务端验证账号密码。账号、密码、Steam令牌和授权令牌不会保存到订单数据或返回给浏览器。Steam 账户需要关联已有 KRAFTON/KID 账号；需要二次验证时页面会要求输入 Steam手机令牌或备用码。
 
 全球账号登录实现已包含在 `global_login/` 目录，部署时无需额外复制 `pubg_cookie_getter_http.py`。默认使用 Playwright 生成 KRAFTON 登录所需的浏览器遥测，因此需要执行 `python -m playwright install chromium`。
