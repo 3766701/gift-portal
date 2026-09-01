@@ -856,6 +856,7 @@ class PUBGCookieGetter:
         """返回完整登录信息 dict；失败返回 None。GUI 旧逻辑可继续用 get_authorization() 只取 focToken。"""
         start = time.time()
         user_tag = self._format_user_tag(username, display_name)
+        stage = "akamai_seed"
         try:
             seed_entry = _AbckPool.get_seed_entry(proxy=self.http_proxy)
             seed_abck = str(seed_entry.get("abck") or "")
@@ -864,6 +865,7 @@ class PUBGCookieGetter:
             initial_cookies = [c.name for c in s.cookies]
             logger.info("%s----HTTP 开始获取 Authorization，seed_source=%s seed_abck=%s...", user_tag, seed_entry.get("seed_source"), seed_abck[:12])
 
+            stage = "krafton_login"
             kid_trace = self._login_krafton(
                 s,
                 username,
@@ -883,6 +885,7 @@ class PUBGCookieGetter:
                 no_sec_cpt_wait=self.no_sec_cpt_wait,
                 no_sensor_interleave=self.no_sensor_interleave,
             )
+            stage = "oidc_authorize"
             try:
                 token = pubg_http.oidc_authorize_and_token(
                     s,
@@ -893,6 +896,7 @@ class PUBGCookieGetter:
                 )
             except Exception as exc:
                 raise RuntimeError(f"OIDC authorization failed: {exc}") from exc
+            stage = "foc_signin"
             try:
                 foc = pubg_http.foc_signin(s, token["access_token"])
             except Exception as exc:
@@ -901,6 +905,7 @@ class PUBGCookieGetter:
             if not foc_token:
                 raise RuntimeError("FOC signin failed: missing focToken")
 
+            stage = "authorization_result"
             accounts = foc.get("accounts") if isinstance(foc, dict) else None
             account0 = accounts[0] if isinstance(accounts, list) and accounts else {}
             nickname = account0.get("nickname")
@@ -944,10 +949,10 @@ class PUBGCookieGetter:
             # 非 KRAFTON 登录阶段的异常，也尽量尝试做错误码映射。
             error_text = str(e)
             if error_text in ("SOOP 解绑失败，请稍后重试。", "SOOP 绑定失败，请稍后重试。"):
-                self.last_login_info = {"status": "error", "error": error_text, "elapsed_s": round(time.time() - start, 2)}
+                self.last_login_info = {"status": "error", "error": error_text, "stage": stage, "elapsed_s": round(time.time() - start, 2)}
                 logger.warning("%s----SOOP account connection failed", user_tag)
                 raise
-            self.last_login_info = {"status": "error", "username": username, "error": str(e), "elapsed_s": round(time.time() - start, 2)}
+            self.last_login_info = {"status": "error", "username": username, "error": str(e), "stage": stage, "elapsed_s": round(time.time() - start, 2)}
 
             # 登录失败提示已在 _login_krafton 中输出，不再重复刷技术细节到 GUI。
             if "KRAFTON 登录失败 HTTP" in error_text:

@@ -174,7 +174,7 @@ class GlobalLoginError(RuntimeError):
     """A safe summary of an authorization-stage failure."""
 
 
-def summarize_global_login_error(error):
+def summarize_global_login_error(error, stage_hint=''):
     text = str(error or '')
     lowered = text.casefold()
     if lowered.startswith('foc signin failed') or 'foc 响应中没有 foctoken' in lowered:
@@ -189,7 +189,7 @@ def summarize_global_login_error(error):
         stage = 'authorization'
     status = _GLOBAL_LOGIN_HTTP_STATUS_PATTERN.search(text)
     error_code = _GLOBAL_LOGIN_ERROR_CODE_PATTERN.search(text)
-    details = [f'stage={stage}']
+    details = [f'stage={stage_hint or stage}']
     if status:
         details.append(f'http_status={status.group(1)}')
     if error_code:
@@ -542,7 +542,7 @@ def get_global_login_info(username, password, soop_cookie):
         if login_info:
             return login_info
         failure = getter.get_last_login_info() or {}
-        raise GlobalLoginError(summarize_global_login_error(failure.get('error')))
+        raise GlobalLoginError(summarize_global_login_error(failure.get('error'), failure.get('stage')))
     finally:
         # The getter retains the last authorization response in memory; discard it
         # immediately after this request, regardless of whether login succeeded.

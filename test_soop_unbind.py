@@ -44,6 +44,12 @@ class SoopUnbindTests(unittest.TestCase):
             'stage=oidc_authorize http_status=429',
         )
 
+    def test_global_login_error_summary_uses_recorded_stage(self):
+        self.assertEqual(
+            server.summarize_global_login_error('unexpected response', 'authorization_result'),
+            'stage=authorization_result',
+        )
+
     def test_redemption_trace_context_masks_code_and_account(self):
         self.assertEqual(
             server.redemption_trace_context('95120230F67931A27B58', '3766701@qq.com'),
