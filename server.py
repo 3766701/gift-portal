@@ -52,7 +52,6 @@ ADMIN_SESSION_COOKIE = 'dropzone_admin_session'
 ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60
 ADMIN_SESSIONS = {}
 ADMIN_SESSIONS_LOCK = threading.Lock()
-ITEM_CODE_INDEXES_PATTERN = re.compile(r'^\d+(?:\s*,\s*\d+)*$')
 ADMIN_PASSWORD_HASH_ITERATIONS = 300_000
 SYSTEM_LOG_MAX_MESSAGE_LENGTH = 2_000
 SYSTEM_LOG_MAX_TRACE_LENGTH = 12_000
@@ -174,7 +173,7 @@ class GlobalLoginError(RuntimeError):
     """A safe summary of an authorization-stage failure."""
 
 
-def summarize_global_login_error(error, stage_hint=''):
+def summarize_global_login_error(error, stage_hint='', detail_stage=''):
     text = str(error or '')
     lowered = text.casefold()
     if lowered.startswith('foc signin failed') or 'foc 响应中没有 foctoken' in lowered:
@@ -190,6 +189,8 @@ def summarize_global_login_error(error, stage_hint=''):
     status = _GLOBAL_LOGIN_HTTP_STATUS_PATTERN.search(text)
     error_code = _GLOBAL_LOGIN_ERROR_CODE_PATTERN.search(text)
     details = [f'stage={stage_hint or stage}']
+    if detail_stage:
+        details.append(f'detail_stage={detail_stage}')
     if status:
         details.append(f'http_status={status.group(1)}')
     if error_code:
@@ -197,16 +198,35 @@ def summarize_global_login_error(error, stage_hint=''):
     return ' '.join(details)
 
 
-def normalize_item_code_indexes(raw_value):
-    value = str(raw_value).strip()
-    if not value or not ITEM_CODE_INDEXES_PATTERN.fullmatch(value):
-        return None
-    indexes = []
-    for item in value.split(','):
-        normalized = item.strip()
-        if normalized not in indexes:
-            indexes.append(normalized)
-    return ','.join(indexes)
+def global_login_failure_message(error):
+    """Return a user-safe, actionable message for the recorded login sub-stage."""
+    text = str(error or '')
+    if 'detail_stage=bootstrap' in text:
+        return '全球账号登录初始化失败，请稍后重试。'
+    if 'detail_stage=akamai_sec_cpt' in text:
+        return '全球账号安全验证失败，请稍后重试。'
+    if 'detail_stage=password_login' in text:
+        return '全球账号登录失败，请确认账号、密码及账号状态后重试。'
+    if 'detail_stage=profile_before_soop' in text:
+        return '全球账号登录会话验证失败，请稍后重试。'
+    if 'detail_stage=soop_unbind' in text:
+        return 'SOOP 解绑失败，请稍后重试。'
+    if 'detail_stage=soop_bind_link' in text:
+        return 'SOOP 授权绑定失败，请重新导入有效 Cookie 后重试。'
+    if 'detail_stage=soop_bind_verify' in text:
+        return 'SOOP 已授权，但绑定状态尚未生效，请稍后重试。'
+    return '全球账号授权流程失败，请稍后重试。'
+
+
+def soop_account_name_from_cookie(cookie):
+    """Derive the SOOP account name from the BbsTicket cookie field."""
+    for raw_item in re.split(r'[;\r\n]+', str(cookie or '')):
+        name, separator, value = raw_item.strip().partition('=')
+        if separator and name.strip() == 'BbsTicket':
+            account_name = unquote(value).strip()
+            if account_name:
+                return account_name
+    raise ValueError('SOOP Cookie 中缺少 BbsTicket，无法识别 SOOP 账号。')
 
 
 def hash_admin_password(password):
@@ -287,9 +307,9 @@ def get_admin_inventory(page, page_size, search):
         with connection.cursor() as cursor:
             where = (
                 'WHERE si.created_by LIKE %s OR si.soop_account_name LIKE %s OR si.product_name LIKE %s '
-                'OR si.item_code_idxs LIKE %s OR ac.code LIKE %s'
+                'OR ac.code LIKE %s'
             ) if search else ''
-            params = [f'%{search}%'] * 5 if search else []
+            params = [f'%{search}%'] * 4 if search else []
             cursor.execute(
                 'SELECT COUNT(*) FROM soop_inventory si '
                 'LEFT JOIN activation_code_inventory aci ON aci.soop_inventory_id = si.id '
@@ -298,8 +318,8 @@ def get_admin_inventory(page, page_size, search):
             )
             total = cursor.fetchone()[0]
             cursor.execute(
-                'SELECT si.id, si.created_by, si.soop_account_name, si.product_name, si.item_code_idxs, '
-                'si.enabled, si.created_at, ac.code, ac.claim_status '
+                'SELECT si.id, si.created_by, si.soop_account_name, si.product_name, si.enabled, '
+                'si.created_at, ac.code, ac.claim_status '
                 'FROM soop_inventory si '
                 'LEFT JOIN activation_code_inventory aci ON aci.soop_inventory_id = si.id '
                 'LEFT JOIN activation_codes ac ON ac.id = aci.activation_code_id '
@@ -316,10 +336,10 @@ def get_admin_claims(page, page_size, search):
     try:
         with connection.cursor() as cursor:
             where = (
-                'WHERE ac.activation_code LIKE %s OR ac.claim_account LIKE %s OR ac.product_name LIKE %s '
-                'OR ac.claimed_item_code_idxs LIKE %s OR si.soop_account_name LIKE %s'
+                'WHERE ac.activation_code LIKE %s OR ac.claim_account LIKE %s OR si.product_name LIKE %s '
+                'OR si.soop_account_name LIKE %s'
             ) if search else ''
-            params = [f'%{search}%'] * 5 if search else []
+            params = [f'%{search}%'] * 4 if search else []
             cursor.execute(
                 'SELECT COUNT(*) FROM activation_claims ac '
                 'LEFT JOIN activation_code_inventory aci ON aci.activation_code_id = ac.activation_code_id '
@@ -328,8 +348,8 @@ def get_admin_claims(page, page_size, search):
             )
             total = cursor.fetchone()[0]
             cursor.execute(
-                'SELECT ac.id, ac.activation_code, ac.claim_account, ac.product_name, '
-                'ac.claimed_item_code_idxs, ac.claimed_at, si.soop_account_name '
+                'SELECT ac.id, ac.activation_code, ac.claim_account, si.product_name, '
+                'ac.claimed_at, si.soop_account_name '
                 'FROM activation_claims ac '
                 'LEFT JOIN activation_code_inventory aci ON aci.activation_code_id = ac.activation_code_id '
                 'LEFT JOIN soop_inventory si ON si.id = aci.soop_inventory_id '
@@ -383,16 +403,16 @@ def parse_inventory_import(text):
             continue
         separator = '\t' if '\t' in line else '|'
         fields = [field.strip() for field in line.split(separator)]
-        if len(fields) != 5:
-            raise ValueError(f'第 {line_number} 行格式错误，应为 5 列。')
-        created_by, account_name, product_name, raw_indexes, raw_cookie = fields
-        item_code_idxs = normalize_item_code_indexes(raw_indexes)
+        if len(fields) != 3:
+            raise ValueError(f'第 {line_number} 行格式错误，应为 3 列。')
+        created_by, product_name, raw_cookie = fields
         cookie = normalize_soop_cookie(raw_cookie)
-        if not all((created_by, account_name, product_name, item_code_idxs, cookie)):
-            raise ValueError(f'第 {line_number} 行有空字段或 itemCodeIdx 格式错误。')
-        if any(len(value) > limit for value, limit in ((created_by, 128), (account_name, 128), (product_name, 255), (item_code_idxs, 2048))):
+        account_name = soop_account_name_from_cookie(cookie)
+        if not all((created_by, account_name, product_name, cookie)):
+            raise ValueError(f'第 {line_number} 行有空字段。')
+        if any(len(value) > limit for value, limit in ((created_by, 128), (account_name, 128), (product_name, 255))):
             raise ValueError(f'第 {line_number} 行字段长度超出限制。')
-        entries.append((created_by, account_name, cookie, product_name, item_code_idxs))
+        entries.append((created_by, account_name, cookie, product_name))
     if not entries:
         raise ValueError('没有可导入的库存记录。')
     return entries
@@ -406,8 +426,8 @@ def import_soop_inventory(entries):
             for entry in entries:
                 cursor.execute(
                     'INSERT INTO soop_inventory '
-                    '(created_by, soop_account_name, soop_cookie, product_name, item_code_idxs) '
-                    'VALUES (%s, %s, %s, %s, %s)',
+                    '(created_by, soop_account_name, soop_cookie, product_name) '
+                    'VALUES (%s, %s, %s, %s)',
                     entry,
                 )
                 inventory_id = cursor.lastrowid
@@ -435,15 +455,15 @@ def import_soop_inventory(entries):
         connection.close()
 
 
-def create_soop_inventory(created_by, account_name, cookie, product_name, item_code_idxs):
+def create_soop_inventory(created_by, account_name, cookie, product_name):
     connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
     try:
         with connection.cursor() as cursor:
             cursor.execute(
                 'INSERT INTO soop_inventory '
-                '(created_by, soop_account_name, soop_cookie, product_name, item_code_idxs) '
-                'VALUES (%s, %s, %s, %s, %s)',
-                (created_by, account_name, cookie, product_name, item_code_idxs),
+                '(created_by, soop_account_name, soop_cookie, product_name) '
+                'VALUES (%s, %s, %s, %s)',
+                (created_by, account_name, cookie, product_name),
             )
             inventory_id = cursor.lastrowid
         connection.commit()
@@ -538,11 +558,16 @@ def get_global_login_info(username, password, soop_cookie):
     getter = GLOBAL_LOGIN_GETTER_CLASS()
     try:
         with krafton_login.suppress_artifact_persistence():
-            login_info = getter.get_authorization_info(username, password, soop_cookie=soop_cookie)
+            login_info = getter.get_authorization_info(
+                username, password, soop_cookie=soop_cookie,
+                require_game_authorization=False,
+            )
         if login_info:
             return login_info
         failure = getter.get_last_login_info() or {}
-        raise GlobalLoginError(summarize_global_login_error(failure.get('error'), failure.get('stage')))
+        raise GlobalLoginError(summarize_global_login_error(
+            failure.get('error'), failure.get('stage'), failure.get('detail_stage'),
+        ))
     finally:
         # The getter retains the last authorization response in memory; discard it
         # immediately after this request, regardless of whether login succeeded.
@@ -578,14 +603,14 @@ def get_global_code_status(code):
 
 
 def get_soop_inventory_for_code(code):
-    """Resolve the SOOP account and stock indexes linked to an activation code."""
+    """Resolve the SOOP account and its authenticated Drops session for an activation code."""
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
         raise RuntimeError("全球激活码数据库未配置。")
     connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG)
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                'SELECT si.soop_account_name, si.soop_cookie, si.product_name, si.item_code_idxs '
+                'SELECT si.soop_account_name, si.soop_cookie, si.product_name '
                 'FROM activation_codes ac '
                 'JOIN activation_code_inventory aci ON aci.activation_code_id = ac.id '
                 'JOIN soop_inventory si ON si.id = aci.soop_inventory_id '
@@ -597,21 +622,74 @@ def get_soop_inventory_for_code(code):
         connection.close()
 
 
-def claim_soop_stock(inventory):
-    """Claim every stock index concurrently; one success makes redemption successful."""
+def ensure_inventory_schema():
+    """Remove the legacy item-code claim record after the live-inventory migration."""
+    if pymysql is None:
+        return
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=True)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SHOW COLUMNS FROM soop_inventory LIKE 'item_code_idxs'")
+            if cursor.fetchone():
+                cursor.execute('ALTER TABLE soop_inventory DROP COLUMN item_code_idxs')
+            cursor.execute("SHOW COLUMNS FROM activation_claims LIKE 'claimed_item_code_idxs'")
+            if cursor.fetchone():
+                cursor.execute('ALTER TABLE activation_claims DROP COLUMN claimed_item_code_idxs')
+    finally:
+        connection.close()
+
+
+_UNICODE_SURROGATE_PAIR = re.compile(
+    r'\\u([dD][89aAbB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})'
+)
+_UNICODE_ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+
+def decode_soop_item_name(value):
+    """Decode literal Unicode escapes returned by a SOOP inventory item name."""
+    text = str(value or '').strip()
+
+    def decode_pair(match):
+        high, low = (int(part, 16) for part in match.groups())
+        return chr(0x10000 + ((high - 0xD800) << 10) + low - 0xDC00)
+
+    text = _UNICODE_SURROGATE_PAIR.sub(decode_pair, text)
+    return _UNICODE_ESCAPE.sub(lambda match: chr(int(match.group(1), 16)), text)
+
+
+def claim_soop_stock(inventory, claim_cookie=None):
+    """Claim current eligible KRAFTON Drops and return their live item names."""
     if not inventory:
         raise LookupError('激活码尚未关联 SOOP 库存商品。')
-    account_name, cookie, product_name, raw_indexes = inventory
-    indexes = [item.strip() for item in str(raw_indexes).split(',') if item.strip()]
-    if not indexes:
-        raise LookupError('SOOP 库存商品没有可用 itemCodeIdx。')
+    account_name, stored_cookie, product_name = inventory
+    inventory_client = DropsClient(claim_cookie or stored_cookie)
+    available_items = inventory_client.get_inventory_items()
+    selected_items = {}
+    for item_code_idx, item in available_items.items():
+        if (
+            str(item.get('type', '')).lower() != 'krafton'
+            or item.get('acctConn') is not True
+            or str(item.get('useFlag')) == 'Y'
+        ):
+            continue
+        if not decode_soop_item_name(item.get('itemName')).strip():
+            logger.warning('Skipping SOOP KRAFTON inventory item without itemName item=%s', item_code_idx)
+            continue
+        inventory_client.log_inventory_preflight(item_code_idx, item)
+        inventory_client.require_claimable(item)
+        selected_items[item_code_idx] = item
+    if not selected_items:
+        raise RuntimeError('SOOP 库存列表中没有可领取的 KRAFTON 奖励。')
+
     def claim_one(item_code_idx):
         """Each worker owns its HTTP session because requests sessions are not thread-safe."""
-        client = DropsClient(cookie)
+        client = DropsClient(claim_cookie or stored_cookie)
         last_error = None
         for attempt in range(1, SOOP_CLAIM_RETRIES + 1):
             try:
-                return item_code_idx, client.claim(item_code_idx, confirm=True), None
+                return item_code_idx, client.claim(
+                    item_code_idx, confirm=True, inventory_item=selected_items[item_code_idx],
+                ), None
             except Exception as exc:
                 last_error = exc
                 logger.warning('SOOP claim failed item=%s attempt=%s/%s', item_code_idx, attempt, SOOP_CLAIM_RETRIES)
@@ -621,6 +699,7 @@ def claim_soop_stock(inventory):
 
     successful_by_index = {}
     failures = []
+    indexes = list(selected_items)
     with ThreadPoolExecutor(max_workers=len(indexes), thread_name_prefix='soop-claim') as executor:
         futures = [executor.submit(claim_one, item_code_idx) for item_code_idx in indexes]
         for future in as_completed(futures):
@@ -636,7 +715,11 @@ def claim_soop_stock(inventory):
         raise RuntimeError(f'SOOP 宝箱领取失败（每项已重试 {SOOP_CLAIM_RETRIES} 次）：{detail}')
     if failures:
         logger.warning('SOOP partial claim failures failed_items=%s', [item for item, _ in failures])
-    return account_name, product_name, results
+    claimed_product_names = list(dict.fromkeys(
+        decode_soop_item_name(selected_items[item_code_idx]['itemName'])
+        for item_code_idx, _ in results
+    ))
+    return account_name, ','.join(claimed_product_names), results
 
 
 def reserve_global_code(code, claim_token):
@@ -680,13 +763,10 @@ def release_global_code_reservation(code, claim_token):
         connection.close()
 
 
-def complete_global_code_claim(code, claim_token, claim_account, claim_password, product_name, claimed_item_code_idxs):
+def complete_global_code_claim(code, claim_token, claim_account, claim_password, product_name):
     """Persist a completed claim; a failure leaves the durable reservation in processing."""
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
         raise RuntimeError("全球激活码数据库未配置。")
-    successful_indexes = ','.join(str(item).strip() for item in claimed_item_code_idxs if str(item).strip())
-    if not successful_indexes:
-        raise ValueError('成功领取记录缺少 itemCodeIdx。')
     connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
     try:
         with connection.cursor() as cursor:
@@ -699,11 +779,10 @@ def complete_global_code_claim(code, claim_token, claim_account, claim_password,
             if completed:
                 cursor.execute(
                     'INSERT INTO activation_claims '
-                    '(activation_code_id, activation_code, claim_account, claim_password, product_name, '
-                    'claimed_item_code_idxs, claimed_at) '
-                    'SELECT id, code, %s, %s, %s, %s, UTC_TIMESTAMP() '
+                    '(activation_code_id, activation_code, claim_account, claim_password, product_name, claimed_at) '
+                    'SELECT id, code, %s, %s, %s, UTC_TIMESTAMP() '
                     'FROM activation_codes WHERE code = %s',
-                    (claim_account, claim_password, product_name or '', successful_indexes, code),
+                    (claim_account, claim_password, product_name or '', code),
                 )
         connection.commit()
         return completed
@@ -771,9 +850,9 @@ class Handler(BaseHTTPRequestHandler):
                 total, rows = get_admin_inventory(page, page_size, search)
                 inventory = [{
                     'id': row[0], 'created_by': row[1], 'soop_account_name': row[2],
-                    'product_name': row[3], 'item_code_idxs': row[4], 'enabled': bool(row[5]),
-                    'created_at': row[6].strftime('%Y-%m-%d %H:%M:%S') if row[6] else None,
-                    'activation_code': row[7], 'claim_status': row[8],
+                    'product_name': row[3], 'enabled': bool(row[4]),
+                    'created_at': row[5].strftime('%Y-%m-%d %H:%M:%S') if row[5] else None,
+                    'activation_code': row[6], 'claim_status': row[7],
                 } for row in rows]
                 return self.send_json({'inventory': inventory, 'page': page, 'page_size': page_size, 'total': total, 'search': search})
             except ValueError as exc:
@@ -789,9 +868,9 @@ class Handler(BaseHTTPRequestHandler):
                 total, rows = get_admin_claims(page, page_size, search)
                 claims = [{
                     'id': row[0], 'activation_code': row[1], 'claim_account': row[2],
-                    'product_name': row[3], 'claimed_item_code_idxs': row[4],
-                    'claimed_at': row[5].strftime('%Y-%m-%d %H:%M:%S') if row[5] else None,
-                    'soop_account_name': row[6],
+                    'product_name': row[3],
+                    'claimed_at': row[4].strftime('%Y-%m-%d %H:%M:%S') if row[4] else None,
+                    'soop_account_name': row[5],
                 } for row in rows]
                 return self.send_json({'claims': claims, 'page': page, 'page_size': page_size, 'total': total, 'search': search})
             except ValueError as exc:
@@ -881,19 +960,18 @@ class Handler(BaseHTTPRequestHandler):
             if not data:
                 return self.send_json({'message': '请求数据格式错误。'}, 400)
             created_by = str(data.get('created_by', '')).strip()
-            account_name = str(data.get('soop_account_name', '')).strip()
             try:
                 cookie = normalize_soop_cookie(data.get('soop_cookie', ''))
+                account_name = soop_account_name_from_cookie(cookie)
             except ValueError as exc:
                 return self.send_json({'message': str(exc)}, 400)
             product_name = str(data.get('product_name', '')).strip()
-            item_code_idxs = normalize_item_code_indexes(data.get('item_code_idxs', ''))
-            if not all((created_by, account_name, cookie, product_name, item_code_idxs)):
-                return self.send_json({'message': '请完整填写录入人、SOOP 账号、Cookie、商品名称和 itemCodeIdx。'}, 400)
-            if any(len(value) > limit for value, limit in ((created_by, 128), (account_name, 128), (product_name, 255), (item_code_idxs, 2048))):
+            if not all((created_by, account_name, cookie, product_name)):
+                return self.send_json({'message': '请完整填写录入人、Cookie 和商品名称。'}, 400)
+            if any(len(value) > limit for value, limit in ((created_by, 128), (account_name, 128), (product_name, 255))):
                 return self.send_json({'message': '录入字段长度超出限制。'}, 400)
             try:
-                inventory_id = create_soop_inventory(created_by, account_name, cookie, product_name, item_code_idxs)
+                inventory_id = create_soop_inventory(created_by, account_name, cookie, product_name)
                 return self.send_json({'message': '库存录入成功。', 'inventory_id': inventory_id}, 201)
             except pymysql.err.IntegrityError:
                 return self.send_json({'message': '该 SOOP 账号下已存在同名商品库存。'}, 409)
@@ -987,6 +1065,10 @@ class Handler(BaseHTTPRequestHandler):
             if not inventory:
                 log_business_error(f'SOOP inventory mapping missing after activation-code lookup {trace_context}')
                 return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
+            logger.info(
+                'Global redemption inventory soop_account=%s product=%s %s',
+                inventory[0], inventory[2], trace_context,
+            )
             try:
                 login_info = get_global_login_info(username, password, inventory[1])
             except RuntimeError as exc:
@@ -997,12 +1079,12 @@ class Handler(BaseHTTPRequestHandler):
                     log_business_error(f'SOOP binding failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': str(exc)}, 502)
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
-                return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
+                return self.send_json({'message': global_login_failure_message(exc)}, 503)
             except Exception:
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
-                return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
-            if not login_info or not login_info.get('authorization'):
-                log_business_error(f'Global login did not return authorization {trace_context}')
+                return self.send_json({'message': '全球账号授权流程失败，请稍后重试。'}, 503)
+            if not login_info or login_info.get('status') != 'success':
+                log_business_error(f'Global login did not complete KRAFTON/SOOP connection {trace_context}')
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)
             player_name = str(login_info.get('globalNickname') or login_info.get('nickname') or login_info.get('gameName') or '全球账号')
             order_details = {'delivery_mode': 'global', 'player_name': player_name}
@@ -1025,7 +1107,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({'message': '该激活码已经使用过了。'}, 409)
                 return self.send_json({'message': '该激活码正在领取中，请稍后查询结果。'}, 409)
             try:
-                _, reward, claimed_items = claim_soop_stock(inventory)
+                _, reward, claimed_items = claim_soop_stock(
+                    inventory, claim_cookie=login_info.get('soop_claim_cookie'),
+                )
             except Exception:
                 try:
                     release_global_code_reservation(code, claim_token)
@@ -1037,7 +1121,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 claimed = complete_global_code_claim(
                     code, claim_token, username, password, reward,
-                    [item_code_idx for item_code_idx, _ in claimed_items],
                 )
             except Exception:
                 logger.exception('Activation-code completion failed after SOOP claim %s', trace_context)
@@ -1072,6 +1155,7 @@ if __name__ == '__main__':
         print(f'Admin user created: {username}')
         raise SystemExit(0)
     try:
+        ensure_inventory_schema()
         ensure_system_log_table()
         database_log_handler = DatabaseErrorLogHandler(level=logging.ERROR)
         logger.addHandler(database_log_handler)

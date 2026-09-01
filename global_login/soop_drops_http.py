@@ -84,24 +84,71 @@ class DropsClient:
             "Cookie": self.cookie,
         })
 
-    def _json(self, method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    def _json(self, method: str, endpoint: str, *, log_body: bool = True, **kwargs: Any) -> dict[str, Any]:
         response = self.session.request(method, f"{BASE_URL}/{endpoint}", timeout=self.timeout, **kwargs)
         try:
             body = response.json()
         except ValueError as exc:
             logger.warning("SOOP response endpoint=%s http=%s body=%s", endpoint, response.status_code, response.text[:500])
             raise DropsError(f"SOOP returned non-JSON HTTP {response.status_code}.") from exc
-        logger.info("SOOP response endpoint=%s http=%s body=%s", endpoint, response.status_code, _response_summary(body))
+        if log_body:
+            logger.info("SOOP response endpoint=%s http=%s body=%s", endpoint, response.status_code, _response_summary(body))
         if response.status_code >= 400:
             raise DropsError(f"SOOP returned HTTP {response.status_code}: {body.get('message', '')}")
         if not isinstance(body, dict):
             raise DropsError("SOOP returned an unexpected response shape.")
         return body
 
-    def claim(self, item_code_idx: str | int, *, confirm: bool = False) -> dict[str, Any]:
+    def get_inventory_items(self) -> dict[str, dict[str, Any]]:
+        """Fetch the current inventory once and index it by itemCodeIdx."""
+        body = self._json(
+            "POST",
+            "get_drops_list.php",
+            json={"pageNo": 1, "prePageNo": 200, "division": None},
+            log_body=False,
+        )
+        items = body.get("data")
+        if not isinstance(items, list):
+            raise DropsError("SOOP inventory returned an unexpected data shape.")
+        return {
+            str(item["itemCodeIdx"]): item
+            for item in items
+            if isinstance(item, dict) and item.get("itemCodeIdx") is not None
+        }
+
+    @staticmethod
+    def log_inventory_preflight(item_code_idx: str | int, item: dict[str, Any]) -> None:
+        logger.info(
+            "SOOP inventory preflight item=%s type=%s item_type=%s acct_connected=%s used=%s expired=%s renewal=%s",
+            item_code_idx, item.get("type"), item.get("itemType"), item.get("acctConn"), item.get("useFlag"),
+            item.get("expFlag"), item.get("renewFlag"),
+        )
+
+    @staticmethod
+    def require_claimable(item: dict[str, Any]) -> None:
+        if str(item.get("type", "")).lower() != "krafton":
+            raise DropsError("SOOP inventory item is not a KRAFTON reward.")
+        if str(item.get("itemType")) == "4" and item.get("acctConn") is not True:
+            raise DropsError("SOOP game account connection is not active for this inventory item.")
+        if str(item.get("useFlag")) == "Y":
+            raise DropsError("SOOP inventory item has already been claimed.")
+
+    def claim(
+        self,
+        item_code_idx: str | int,
+        *,
+        confirm: bool = False,
+        inventory_item: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Claim one eligible item. This changes SOOP inventory state."""
         if not confirm:
             raise DropsError("Claim requires confirm=True.")
+        if inventory_item is None:
+            inventory_item = self.get_inventory_items().get(str(item_code_idx))
+            if inventory_item is None:
+                raise DropsError("SOOP inventory did not contain the requested item.")
+        self.log_inventory_preflight(item_code_idx, inventory_item)
+        self.require_claimable(inventory_item)
         body = self._json("POST", "get_drops_use_info.php", json={"itemCodeIdx": item_code_idx})
         if body.get("result") != 1:
             raise DropsError(f"SOOP claim was rejected: {body.get('message', 'unknown result')}")

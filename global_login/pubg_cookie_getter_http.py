@@ -48,10 +48,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("pubg_cookie_http.log", encoding="utf-8")],
 )
 logger = logging.getLogger(__name__)
-SOOP_BIND_VERIFY_ATTEMPTS = 5
-SOOP_BIND_VERIFY_DELAY_SECONDS = 1
-
-
 def profile_has_soop_authentication(profile_body: Any) -> bool:
     """Return whether the documented profile authentication list contains SOOP."""
     if not isinstance(profile_body, dict):
@@ -105,31 +101,62 @@ def unbind_soop_if_linked(session: requests.Session, profile_body: Any) -> bool:
     return True
 
 
-def bind_soop_to_session(session: requests.Session, soop_cookie: str) -> None:
-    """Bind the logged-in KRAFTON account to a SOOP account and verify it."""
+def bind_soop_to_session(
+    session: requests.Session,
+    soop_cookie: str,
+    trace: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Bind SOOP to the logged-in KRAFTON session.
+
+    The profile API is diagnostic only: it may lag behind the connection page
+    and must not block redemption after a completed callback.
+    """
+    if trace is not None:
+        trace["detail_stage"] = "soop_bind_link"
     try:
         result = soop_link.link_soop(soop_cookie=soop_cookie, confirm=True, krafton_session=session)
     except (soop_link.LinkError, requests.RequestException) as exc:
         raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
     if result.status != "linked":
         raise RuntimeError("SOOP 绑定失败，请稍后重试。")
-    for attempt in range(1, SOOP_BIND_VERIFY_ATTEMPTS + 1):
-        try:
-            profile_response = kid.profile(session)
-        except requests.RequestException as exc:
-            raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
-        logger.info(
-            "SOOP bind verification response http=%s attempt=%s/%s",
-            profile_response.status_code, attempt, SOOP_BIND_VERIFY_ATTEMPTS,
-        )
-        if (
+    if trace is not None:
+        trace["soop_bind_linked"] = True
+    try:
+        profile_response = kid.profile(session)
+        profile_linked = (
             profile_response.status_code == 200
             and profile_has_soop_authentication(kid.try_json(profile_response))
-        ):
-            return
-        if attempt < SOOP_BIND_VERIFY_ATTEMPTS:
-            time.sleep(SOOP_BIND_VERIFY_DELAY_SECONDS)
-    raise RuntimeError("SOOP 绑定尚未生效，请稍后重试。")
+        )
+        if trace is not None:
+            trace["soop_bind_profile_status"] = profile_response.status_code
+            trace["soop_bind_profile_linked"] = profile_linked
+        logger.info(
+            "SOOP bind callback completed profile_http=%s profile_linked=%s",
+            profile_response.status_code, profile_linked,
+        )
+    except requests.RequestException as exc:
+        if trace is not None:
+            trace["soop_bind_profile_error"] = type(exc).__name__
+        logger.warning("SOOP bind callback completed but profile verification request failed")
+
+
+def soop_cookie_from_session(session: requests.Session, fallback_cookie: str) -> str:
+    """Build the claim Cookie header using the domains valid for Drops.
+
+    OAuth can set a host-only cookie for ``openapi.sooplive.com`` with the
+    same name as the domain cookie needed by ``drops.sooplive.com``.  Flattening
+    cookies by name leaks that host-only value into the Drops request and breaks
+    the SOOP account context after a successful KRAFTON callback.
+    """
+    request = requests.Request(
+        "POST", "https://drops.sooplive.com/api/get_drops_use_info.php",
+    ).prepare()
+    cookie_header = requests.cookies.get_cookie_header(session.cookies, request)
+    if not cookie_header:
+        cookie_header = fallback_cookie
+    names = sorted(name for name, _ in soop_link._cookie_items(cookie_header))
+    logger.info("SOOP Drops session cookies prepared names=%s", names)
+    return cookie_header
 
 
 # 登录相关错误映射：后端 message -> 前端 key -> 中文提示 -> 含义
@@ -543,6 +570,7 @@ class PUBGCookieGetter:
         self.db_path = os.environ.get("PUBG_ACCOUNTS_DB", "pubg_accounts.db")
         self.init_database()
         self.last_login_info: Optional[Dict[str, Any]] = None
+        self._last_kid_login_trace: Dict[str, Any] = {}
         self.http_proxy = os.environ.get("PUBG_HTTP_PROXY") or os.environ.get("HTTP_PROXY_URL") or None
         self.sec_cpt_rounds = int(os.environ.get("PUBG_HTTP_SEC_CPT_ROUNDS", "80"))
         self.no_sec_cpt_wait = os.environ.get("PUBG_HTTP_SEC_CPT_WAIT", "0") != "1"
@@ -765,7 +793,9 @@ class PUBGCookieGetter:
         display_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         trace: Dict[str, Any] = {}
+        self._last_kid_login_trace = trace
         user_tag = self._format_user_tag(username, display_name)
+        trace["detail_stage"] = "bootstrap"
         r0 = kid.bootstrap(s)
         trace["bootstrap_status"] = r0.status_code
         try:
@@ -773,6 +803,7 @@ class PUBGCookieGetter:
         except Exception:
             pass
 
+        trace["detail_stage"] = "password_login"
         kid.prewarm_login_route(s)
         r = kid.login(s, username, password, trusted=False)
         body = kid.try_json(r)
@@ -781,6 +812,7 @@ class PUBGCookieGetter:
 
         sec_cpt_attempts = 0
         while r.status_code == 428:
+            trace["detail_stage"] = "akamai_sec_cpt"
             sec_cpt_attempts += 1
             logger.info("%s----触发 Akamai sec-cpt，开始第 %s 次 HTTP 解题", user_tag, sec_cpt_attempts)
             ok = kid.solve_sec_cpt_challenge(
@@ -798,6 +830,7 @@ class PUBGCookieGetter:
             trace["sec_cpt_ok"] = ok
             trace["sec_cpt_stage"] = kid.sec_cpt_cookie_stage(s)
             trace["sec_cpt_attempts"] = sec_cpt_attempts
+            trace["detail_stage"] = "password_login_retry"
             kid.prewarm_login_route(s)
             r = kid.login(s, username, password, trusted=False)
             body = kid.try_json(r)
@@ -834,15 +867,19 @@ class PUBGCookieGetter:
 
             raise RuntimeError(f"KRAFTON 登录失败 HTTP {r.status_code}: {display_tip}")
 
+        trace["detail_stage"] = "profile_before_soop"
         rp = kid.profile(s)
         pbody = kid.try_json(rp)
         trace["profile_status"] = rp.status_code
         if rp.status_code != 200:
             raise RuntimeError(f"KRAFTON profile 验证失败 HTTP {rp.status_code}")
+        trace["detail_stage"] = "soop_unbind"
         trace["soop_unbound"] = unbind_soop_if_linked(s, pbody)
         if soop_cookie:
-            bind_soop_to_session(s, soop_cookie)
+            bind_soop_to_session(s, soop_cookie, trace=trace)
             trace["soop_bound"] = True
+            trace["soop_claim_cookie"] = soop_cookie_from_session(s, soop_cookie)
+        trace["detail_stage"] = "krafton_login_complete"
         return trace
 
     def get_authorization_info(
@@ -852,8 +889,9 @@ class PUBGCookieGetter:
         gui_instance=None,
         display_name: Optional[str] = None,
         soop_cookie: str = "",
+        require_game_authorization: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """返回完整登录信息 dict；失败返回 None。GUI 旧逻辑可继续用 get_authorization() 只取 focToken。"""
+        """Return account information; game authorization is optional for SOOP-only flows."""
         start = time.time()
         user_tag = self._format_user_tag(username, display_name)
         stage = "akamai_seed"
@@ -866,6 +904,7 @@ class PUBGCookieGetter:
             logger.info("%s----HTTP 开始获取 Authorization，seed_source=%s seed_abck=%s...", user_tag, seed_entry.get("seed_source"), seed_abck[:12])
 
             stage = "krafton_login"
+            self._last_kid_login_trace = {}
             kid_trace = self._login_krafton(
                 s,
                 username,
@@ -875,6 +914,22 @@ class PUBGCookieGetter:
                 gui_instance=gui_instance,
                 display_name=display_name,
             )
+
+            if not require_game_authorization:
+                soop_claim_cookie = kid_trace.pop("soop_claim_cookie", "")
+                info = {
+                    "status": "success",
+                    "username": username,
+                    "nickname": None,
+                    "globalNickname": None,
+                    "gameName": None,
+                    "soop_claim_cookie": soop_claim_cookie,
+                    "kid": kid_trace,
+                    "elapsed_s": round(time.time() - start, 2),
+                }
+                self.last_login_info = info
+                logger.info("%s----KRAFTON/SOOP connection ready; game authorization skipped", user_tag)
+                return info
 
             oidc_args = SimpleNamespace(
                 email=username,
@@ -948,11 +1003,26 @@ class PUBGCookieGetter:
         except Exception as e:
             # 非 KRAFTON 登录阶段的异常，也尽量尝试做错误码映射。
             error_text = str(e)
+            kid_trace = self._last_kid_login_trace
+            safe_kid_trace = {
+                key: value for key, value in kid_trace.items()
+                if not key.endswith("_body")
+            }
+            detail_stage = safe_kid_trace.get("detail_stage")
+            logger.error(
+                "%s----Authorization failed stage=%s detail_stage=%s trace=%s error=%s",
+                user_tag, stage, detail_stage or "-", safe_kid_trace, error_text,
+            )
+            failure = {
+                "status": "error", "username": username, "error": error_text,
+                "stage": stage, "detail_stage": detail_stage,
+                "kid": safe_kid_trace, "elapsed_s": round(time.time() - start, 2),
+            }
             if error_text in ("SOOP 解绑失败，请稍后重试。", "SOOP 绑定失败，请稍后重试。"):
-                self.last_login_info = {"status": "error", "error": error_text, "stage": stage, "elapsed_s": round(time.time() - start, 2)}
+                self.last_login_info = failure
                 logger.warning("%s----SOOP account connection failed", user_tag)
                 raise
-            self.last_login_info = {"status": "error", "username": username, "error": str(e), "stage": stage, "elapsed_s": round(time.time() - start, 2)}
+            self.last_login_info = failure
 
             # 登录失败提示已在 _login_krafton 中输出，不再重复刷技术细节到 GUI。
             if "KRAFTON 登录失败 HTTP" in error_text:

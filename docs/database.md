@@ -46,9 +46,9 @@ WHERE code = ? AND used_at IS NULL;
 
 ## Claim records
 
-每次成功兑换写入一条记录，保存领取时间、领取账号、激活码和关联库存商品。
-所有配置的 `itemCodeIdx` 都会尝试领取；任一 `itemCodeIdx` 成功即代表本次
-激活码兑换成功，所有成功索引以英文逗号拼接后保存到同一列。
+每次成功兑换写入一条记录，保存领取时间、领取账号、激活码和实际领取的商品名。
+领取前仅选择 Drops 库存中 `type` 为 `krafton`、已连接游戏账号且未领取的项目。
+商品名称从 `get_drops_list.php` 响应的 `itemName` 获取；其中字面量 Unicode 转义会解码，同次领取多个商品时以英文逗号拼接保存。
 
 ```sql
 CREATE TABLE IF NOT EXISTS activation_claims (
@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS activation_claims (
     claim_account VARCHAR(255) NOT NULL,
     claim_password TEXT NOT NULL,
     product_name VARCHAR(255) NOT NULL,
-    claimed_item_code_idxs VARCHAR(2048) NOT NULL,
     claimed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_activation_claims_code (activation_code_id),
     KEY ix_activation_claims_claimed_at (claimed_at),
@@ -75,9 +74,10 @@ CREATE TABLE IF NOT EXISTS activation_claims (
 | `activation_code` | 激活码文本 |
 | `claim_account` | 前台提交的账号名 |
 | `claim_password` | 前台提交的账号密码 |
-| `product_name` | 领取商品名称 |
-| `claimed_item_code_idxs` | 成功领取的 SOOP `itemCodeIdx`，用英文逗号分隔 |
+| `product_name` | Drops 库存接口返回的实际领取商品名（`itemName`） |
 | `claimed_at` | 领取时间 |
+
+管理端的“领取记录”商品列显示关联 `soop_inventory.product_name`，即录入库存时配置的商品名称。
 
 ## Feature configuration
 

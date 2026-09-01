@@ -40,8 +40,8 @@
               <section class="import-card admin-card">
           <form id="inventory-import-form" class="inventory-form">
           <h1>导入库存</h1>
-          <p class="import-format">每行一条：录入人|SOOP账号|商品名称|itemCodeIdx|SOOP Cookie（支持 Cookie 文本或 JSON）</p>
-          <textarea id="inventory-import-text" class="layui-textarea import-text" rows="13" placeholder="张三|soop_account|PUBG 补给箱|111198867,110890557|cookie_name=cookie_value; ..." required></textarea>
+          <p class="import-format">每行一条：录入人|商品名称|SOOP Cookie（支持 Cookie 文本或 JSON；账号自动从 BbsTicket 提取）</p>
+          <textarea id="inventory-import-text" class="layui-textarea import-text" rows="13" placeholder="张三|PUBG 补给箱|cookie_name=cookie_value; ..." required></textarea>
           <button class="layui-btn" type="submit">导入库存</button>
           <p id="inventory-message" class="form-message"></p>
           <div id="generated-codes" class="generated-codes" hidden>
@@ -57,7 +57,7 @@
           <div class="panel-title"><h1>库存与激活码</h1><div class="panel-tools"><input id="inventory-search" class="layui-input search-input" placeholder="搜索商品、账号、激活码、录入人"><button id="inventory-search-button" class="layui-btn" type="button">搜索</button><button id="refresh" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
           <div class="table-wrap">
             <table class="inventory-table">
-              <thead><tr><th>ID</th><th>商品</th><th>SOOP 账号</th><th>itemCodeIdx</th><th>录入人</th><th>录入时间</th><th>激活码</th><th>状态</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>商品</th><th>SOOP 账号</th><th>录入人</th><th>录入时间</th><th>激活码</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="inventory-body"></tbody>
             </table>
           </div>
@@ -71,7 +71,7 @@
           <div class="panel-title"><h1>领取记录</h1><div class="panel-tools"><input id="claims-search" class="layui-input search-input" placeholder="搜索激活码、领取账号、商品"><button id="claims-search-button" class="layui-btn" type="button">搜索</button><button id="refresh-claims" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
           <div class="table-wrap">
             <table class="inventory-table">
-              <thead><tr><th>ID</th><th>激活码</th><th>领取账号</th><th>商品</th><th>成功 itemCodeIdx</th><th>SOOP 账号</th><th>领取时间</th></tr></thead>
+              <thead><tr><th>ID</th><th>激活码</th><th>领取账号</th><th>商品</th><th>SOOP 账号</th><th>领取时间</th></tr></thead>
               <tbody id="claims-body"></tbody>
             </table>
           </div>

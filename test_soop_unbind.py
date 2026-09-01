@@ -26,6 +26,28 @@ class Session:
 
 
 class SoopUnbindTests(unittest.TestCase):
+    def test_global_redemption_skips_game_authorization(self):
+        class FakeGetter:
+            last_kwargs = None
+
+            def get_authorization_info(self, *args, **kwargs):
+                type(self).last_kwargs = kwargs
+                return {"status": "success"}
+
+            def get_last_login_info(self):
+                return None
+
+        original = server.GLOBAL_LOGIN_GETTER_CLASS
+        server.GLOBAL_LOGIN_GETTER_CLASS = FakeGetter
+        try:
+            self.assertEqual(
+                server.get_global_login_info("account@example.com", "password", "soop-cookie"),
+                {"status": "success"},
+            )
+        finally:
+            server.GLOBAL_LOGIN_GETTER_CLASS = original
+        self.assertFalse(FakeGetter.last_kwargs["require_game_authorization"])
+
     def test_global_login_error_summary_keeps_stage_status_and_error_code(self):
         self.assertEqual(
             server.summarize_global_login_error("FOC signin failed: HTTP 403 {'errorCode': 'account-not-eligible'}"),
@@ -50,6 +72,16 @@ class SoopUnbindTests(unittest.TestCase):
             'stage=authorization_result',
         )
 
+    def test_global_login_failure_message_uses_detail_stage(self):
+        self.assertEqual(
+            server.global_login_failure_message('stage=krafton_login detail_stage=soop_bind_verify'),
+            'SOOP 已授权，但绑定状态尚未生效，请稍后重试。',
+        )
+        self.assertEqual(
+            server.global_login_failure_message('stage=krafton_login detail_stage=password_login'),
+            '全球账号登录失败，请确认账号、密码及账号状态后重试。',
+        )
+
     def test_redemption_trace_context_masks_code_and_account(self):
         self.assertEqual(
             server.redemption_trace_context('95120230F67931A27B58', '3766701@qq.com'),
@@ -58,14 +90,19 @@ class SoopUnbindTests(unittest.TestCase):
 
     def test_inventory_import_normalizes_json_cookie(self):
         entries = server.parse_inventory_import(
-            '张三|soop_account|PUBG 补给箱|111198867|'
+            '张三|PUBG 补给箱|'
             '{"UserTicket":"user-ticket","AuthTicket":"auth-ticket",'
-            '"BbsTicket":"bbs-ticket","BbsSaveTicket":""}'
+            '"BbsTicket":"soop_account","BbsSaveTicket":""}'
         )
         self.assertEqual(
             entries[0][2],
-            'UserTicket=user-ticket; AuthTicket=auth-ticket; BbsTicket=bbs-ticket; BbsSaveTicket=',
+            'UserTicket=user-ticket; AuthTicket=auth-ticket; BbsTicket=soop_account; BbsSaveTicket=',
         )
+        self.assertEqual(entries[0][1], 'soop_account')
+
+    def test_inventory_import_requires_bbs_ticket(self):
+        with self.assertRaisesRegex(ValueError, 'BbsTicket'):
+            server.parse_inventory_import('张三|PUBG 补给箱|AuthTicket=value')
 
     def test_cookie_normalization_preserves_empty_values(self):
         self.assertEqual(
@@ -81,9 +118,46 @@ class SoopUnbindTests(unittest.TestCase):
 
     def test_claim_requires_soop_business_success(self):
         client = DropsClient("AuthTicket=value")
-        with patch.object(client, "_json", return_value={"result": 0, "message": "NOT ELIGIBLE"}):
+        with patch.object(client, "_json", side_effect=[
+            {"data": [{"itemCodeIdx": "111198867", "type": "krafton", "itemType": "4", "acctConn": True, "useFlag": "N"}]},
+            {"result": 0, "message": "NOT ELIGIBLE"},
+        ]):
             with self.assertRaisesRegex(RuntimeError, "NOT ELIGIBLE"):
                 client.claim("111198867", confirm=True)
+
+    def test_claim_stops_when_inventory_says_game_account_is_not_connected(self):
+        client = DropsClient("AuthTicket=value")
+        with patch.object(client, "_json", return_value={
+            "data": [{"itemCodeIdx": "111198867", "type": "krafton", "itemType": "4", "acctConn": False, "useFlag": "N"}],
+        }) as request:
+            with self.assertRaisesRegex(RuntimeError, "connection is not active"):
+                client.claim("111198867", confirm=True)
+        request.assert_called_once_with(
+            "POST", "get_drops_list.php",
+            json={"pageNo": 1, "prePageNo": 200, "division": None}, log_body=False,
+        )
+
+    @patch.object(server, 'DropsClient')
+    def test_stock_claim_fetches_inventory_once_for_all_target_items(self, drops_client):
+        client = drops_client.return_value
+        client.get_inventory_items.return_value = {
+            '111': {'itemCodeIdx': '111', 'type': 'krafton', 'itemType': '4', 'itemName': 'KRAFTON \\u7bb1\\u5b50 A', 'acctConn': True, 'useFlag': 'N'},
+            '222': {'itemCodeIdx': '222', 'type': 'krafton', 'itemType': '4', 'itemName': 'KRAFTON 箱子 B', 'acctConn': True, 'useFlag': 'N'},
+            '333': {'itemCodeIdx': '333', 'type': 'other', 'itemType': '4', 'itemName': '其他平台奖励', 'acctConn': True, 'useFlag': 'N'},
+        }
+        client.claim.side_effect = [
+            {'result': 1, 'itemCodeIdx': '111'},
+            {'result': 1, 'itemCodeIdx': '222'},
+        ]
+
+        _, product_name, results = server.claim_soop_stock(('account', 'cookie', 'reward'))
+
+        client.get_inventory_items.assert_called_once_with()
+        self.assertEqual({item for item, _ in results}, {'111', '222'})
+        self.assertEqual(product_name, 'KRAFTON 箱子 A,KRAFTON 箱子 B')
+
+    def test_soop_item_name_decodes_literal_unicode_escapes(self):
+        self.assertEqual(server.decode_soop_item_name('\\u6d4b\\u8bd5'), '测试')
 
     def test_response_summary_redacts_nested_credentials(self):
         from global_login.soop_drops_http import _response_summary
@@ -116,25 +190,32 @@ class SoopUnbindTests(unittest.TestCase):
 
     @patch.object(getter.kid, "profile")
     @patch.object(getter.soop_link, "link_soop")
-    def test_binds_soop_and_verifies_profile(self, link_soop, profile):
+    def test_binds_soop_without_blocking_profile_poll(self, link_soop, profile):
         link_soop.return_value = Mock(status="linked")
         profile.return_value = Response(200, {"authentications": [{"provider": "SOOP"}]})
         session = Session(Response(204))
         getter.bind_soop_to_session(session, "AuthTicket=value")
         link_soop.assert_called_once_with(soop_cookie="AuthTicket=value", confirm=True, krafton_session=session)
+        profile.assert_called_once_with(session)
 
-    @patch.object(getter.time, "sleep")
     @patch.object(getter.kid, "profile")
     @patch.object(getter.soop_link, "link_soop")
-    def test_waits_for_soop_binding_to_appear_in_profile(self, link_soop, profile, sleep):
+    def test_binding_callback_is_sufficient_when_profile_would_be_stale(self, link_soop, profile):
         link_soop.return_value = Mock(status="linked")
-        profile.side_effect = [
-            Response(200, {"authentications": [{"provider": "Steam"}]}),
-            Response(200, {"authentications": [{"provider": "SOOP"}]}),
-        ]
-        getter.bind_soop_to_session(Session(Response(204)), "AuthTicket=value")
-        self.assertEqual(profile.call_count, 2)
-        sleep.assert_called_once_with(getter.SOOP_BIND_VERIFY_DELAY_SECONDS)
+        profile.return_value = Response(200, {"authentications": [{"provider": "Steam"}]})
+        trace = {}
+        getter.bind_soop_to_session(Session(Response(204)), "AuthTicket=value", trace=trace)
+        self.assertTrue(trace["soop_bind_linked"])
+
+    def test_claim_cookie_uses_only_cookies_valid_for_drops_domain(self):
+        session = getter.requests.Session()
+        session.cookies.set("AuthTicket", "drops-session", domain=".sooplive.com", path="/")
+        session.cookies.set("AuthTicket", "openapi-session", domain="openapi.sooplive.com", path="/")
+        cookie = getter.soop_cookie_from_session(
+            session, "UserTicket=original-user; AuthTicket=original-auth; BbsSaveTicket=",
+        )
+        self.assertIn("AuthTicket=drops-session", cookie)
+        self.assertNotIn("openapi-session", cookie)
 
     def test_multiline_cookie_is_normalized(self):
         self.assertEqual(
