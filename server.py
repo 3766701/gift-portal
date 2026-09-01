@@ -165,7 +165,7 @@ def mask_email(value):
 
 def redemption_trace_context(code, account):
     """Attach safe identifiers to redemption errors for cross-system tracing."""
-    return f'code={mask_value(code, prefix=4, suffix=4)} account={mask_email(account)}'
+    return f'code={mask_value(code, prefix=4, suffix=4)} account={str(account).strip()}'
 
 
 def normalize_item_code_indexes(raw_value):
