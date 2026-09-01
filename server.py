@@ -58,6 +58,8 @@ SYSTEM_LOG_MAX_MESSAGE_LENGTH = 2_000
 SYSTEM_LOG_MAX_TRACE_LENGTH = 12_000
 _SYSTEM_LOG_WRITE_GUARD = threading.local()
 _SYSTEM_LOG_SECRET_PATTERN = re.compile(r'(?i)(cookie|password|authorization|bearer|authticket|userticket|bbsticket)\s*[=:]\s*[^\s,;\'"}]+')
+_GLOBAL_LOGIN_HTTP_STATUS_PATTERN = re.compile(r'\bHTTP\s+(\d{3})\b', re.I)
+_GLOBAL_LOGIN_ERROR_CODE_PATTERN = re.compile(r'(?i)(?:errorCode|error_code|code)[\'"\s]*[:=][\s\'"`]*([A-Za-z0-9_.-]+)')
 
 
 def redact_log_text(value, limit):
@@ -166,6 +168,33 @@ def mask_email(value):
 def redemption_trace_context(code, account):
     """Attach safe identifiers to redemption errors for cross-system tracing."""
     return f'code={mask_value(code, prefix=4, suffix=4)} account={str(account).strip()}'
+
+
+class GlobalLoginError(RuntimeError):
+    """A safe summary of an authorization-stage failure."""
+
+
+def summarize_global_login_error(error):
+    text = str(error or '')
+    lowered = text.casefold()
+    if lowered.startswith('foc signin failed') or 'foc 响应中没有 foctoken' in lowered:
+        stage = 'foc_signin'
+    elif lowered.startswith('oidc token failed'):
+        stage = 'oidc_token'
+    elif lowered.startswith('oidc authorize') or lowered.startswith('oidc unexpected'):
+        stage = 'oidc_authorize'
+    elif lowered.startswith('krafton 登录失败'):
+        stage = 'krafton_login'
+    else:
+        stage = 'authorization'
+    status = _GLOBAL_LOGIN_HTTP_STATUS_PATTERN.search(text)
+    error_code = _GLOBAL_LOGIN_ERROR_CODE_PATTERN.search(text)
+    details = [f'stage={stage}']
+    if status:
+        details.append(f'http_status={status.group(1)}')
+    if error_code:
+        details.append(f'error_code={error_code.group(1)}')
+    return ' '.join(details)
 
 
 def normalize_item_code_indexes(raw_value):
@@ -509,7 +538,11 @@ def get_global_login_info(username, password, soop_cookie):
     getter = GLOBAL_LOGIN_GETTER_CLASS()
     try:
         with krafton_login.suppress_artifact_persistence():
-            return getter.get_authorization_info(username, password, soop_cookie=soop_cookie)
+            login_info = getter.get_authorization_info(username, password, soop_cookie=soop_cookie)
+        if login_info:
+            return login_info
+        failure = getter.get_last_login_info() or {}
+        raise GlobalLoginError(summarize_global_login_error(failure.get('error')))
     finally:
         # The getter retains the last authorization response in memory; discard it
         # immediately after this request, regardless of whether login succeeded.

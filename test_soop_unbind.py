@@ -26,6 +26,18 @@ class Session:
 
 
 class SoopUnbindTests(unittest.TestCase):
+    def test_global_login_error_summary_keeps_stage_status_and_error_code(self):
+        self.assertEqual(
+            server.summarize_global_login_error("FOC signin failed: HTTP 403 {'errorCode': 'account-not-eligible'}"),
+            'stage=foc_signin http_status=403 error_code=account-not-eligible',
+        )
+
+    def test_global_login_error_summary_omits_response_body(self):
+        self.assertEqual(
+            server.summarize_global_login_error('OIDC token failed: HTTP 400 {"access_token":"secret"}'),
+            'stage=oidc_token http_status=400',
+        )
+
     def test_redemption_trace_context_masks_code_and_account(self):
         self.assertEqual(
             server.redemption_trace_context('95120230F67931A27B58', '3766701@qq.com'),
