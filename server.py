@@ -67,8 +67,13 @@ def redact_log_text(value, limit):
     return text[:limit]
 
 
+def log_business_error(message, *, exc_info=False):
+    """Record a handled business failure in the system error log."""
+    logger.error('Business error: %s', message, exc_info=exc_info)
+
+
 class DatabaseErrorLogHandler(logging.Handler):
-    """Persist error-level records without allowing logging failures to affect requests."""
+    """Persist business failures and unexpected errors without affecting requests."""
     def emit(self, record):
         if getattr(_SYSTEM_LOG_WRITE_GUARD, 'active', False) or pymysql is None:
             return
@@ -907,28 +912,30 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 inventory = get_soop_inventory_for_code(code)
             except LookupError as exc:
-                logger.warning('SOOP inventory mapping missing: %s', exc)
+                log_business_error(f'SOOP inventory mapping missing: {exc}')
                 return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
             except Exception:
                 logger.exception('SOOP inventory lookup failed before global login')
                 return self.send_json({'message': 'SOOP 库存服务暂不可用，请稍后重试。'}, 503)
             if not inventory:
+                log_business_error('SOOP inventory mapping missing after activation-code lookup')
                 return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
             try:
                 login_info = get_global_login_info(username, password, inventory[1])
             except RuntimeError as exc:
                 if str(exc) == 'SOOP 解绑失败，请稍后重试。':
-                    logger.warning('SOOP unlink failed before global redemption')
+                    log_business_error('SOOP unlink failed before global redemption', exc_info=True)
                     return self.send_json({'message': 'SOOP 解绑失败，请稍后重试。'}, 502)
                 if str(exc) == 'SOOP 绑定失败，请稍后重试。':
-                    logger.warning('SOOP binding failed before global redemption')
+                    log_business_error('SOOP binding failed before global redemption', exc_info=True)
                     return self.send_json({'message': 'SOOP 绑定失败，请稍后重试。'}, 502)
-                logger.warning('Global login service failed')
+                log_business_error('Global login service failed', exc_info=True)
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             except Exception:
-                logger.warning('Global login service failed')
+                log_business_error('Global login service failed', exc_info=True)
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             if not login_info or not login_info.get('authorization'):
+                log_business_error('Global login did not return authorization')
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)
             player_name = str(login_info.get('globalNickname') or login_info.get('nickname') or login_info.get('gameName') or '全球账号')
             order_details = {'delivery_mode': 'global', 'player_name': player_name}

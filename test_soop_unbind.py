@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import server
 from global_login import pubg_cookie_getter_http as getter
 from global_login.soop_drops_http import DropsClient, normalize_cookie_header
 
@@ -25,6 +26,12 @@ class Session:
 
 
 class SoopUnbindTests(unittest.TestCase):
+    def test_business_error_uses_error_level(self):
+        with self.assertLogs('gift_portal', level='ERROR') as captured:
+            server.log_business_error('SOOP inventory mapping missing')
+        self.assertEqual(captured.records[0].levelname, 'ERROR')
+        self.assertIn('Business error: SOOP inventory mapping missing', captured.output[0])
+
     def test_claim_requires_soop_business_success(self):
         client = DropsClient("AuthTicket=value")
         with patch.object(client, "_json", return_value={"result": 0, "message": "NOT ELIGIBLE"}):

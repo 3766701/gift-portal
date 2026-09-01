@@ -18,7 +18,11 @@ const showAdminPage=viewId=>{
 };
 const showGeneratedCodes=codes=>{
   const output=el('generated-codes-text');
-  output.value=codes.map(item=>`${item.product_name}----${item.code}`).join('\n');
+  output.value=codes.map(item=>{
+    const redeemUrl=new URL(`${adminApiPrefix}/`,location.origin);
+    redeemUrl.searchParams.set('key',item.code);
+    return `${item.product_name}----${item.code}----${redeemUrl.href}`;
+  }).join('\n');
   el('generated-codes').hidden=!codes.length;
 };
 const copyGeneratedCodes=async()=>{
