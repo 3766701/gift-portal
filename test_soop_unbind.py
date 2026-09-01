@@ -26,6 +26,12 @@ class Session:
 
 
 class SoopUnbindTests(unittest.TestCase):
+    def test_redemption_trace_context_masks_code_and_account(self):
+        self.assertEqual(
+            server.redemption_trace_context('95120230F67931A27B58', '3766701@qq.com'),
+            'code=9512***7B58 account=376***01@qq.com',
+        )
+
     def test_inventory_import_normalizes_json_cookie(self):
         entries = server.parse_inventory_import(
             '张三|soop_account|PUBG 补给箱|111198867|'

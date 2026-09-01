@@ -163,6 +163,11 @@ def mask_email(value):
     return f'{mask_value(local)}@{domain}'
 
 
+def redemption_trace_context(code, account):
+    """Attach safe identifiers to redemption errors for cross-system tracing."""
+    return f'code={mask_value(code, prefix=4, suffix=4)} account={mask_email(account)}'
+
+
 def normalize_item_code_indexes(raw_value):
     value = str(raw_value).strip()
     if not value or not ITEM_CODE_INDEXES_PATTERN.fullmatch(value):
@@ -918,10 +923,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'message': '请填写完整的激活码、全球账号和密码。'}, 400)
             if not EMAIL_PATTERN.fullmatch(username):
                 return self.send_json({'message': '请输入正确的邮箱格式。'}, 400)
+            trace_context = redemption_trace_context(code, username)
             try:
                 code_status, reward, _ = get_global_code_status(code)
             except Exception:
-                logger.exception('Activation-code database query failed')
+                logger.exception('Activation-code database query failed %s', trace_context)
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
             if code_status == 'missing':
                 return self.send_json({'message': '激活码不存在或已失效。'}, 404)
@@ -940,30 +946,30 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 inventory = get_soop_inventory_for_code(code)
             except LookupError as exc:
-                log_business_error(f'SOOP inventory mapping missing: {exc}')
+                log_business_error(f'SOOP inventory mapping missing: {exc} {trace_context}')
                 return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
             except Exception:
-                logger.exception('SOOP inventory lookup failed before global login')
+                logger.exception('SOOP inventory lookup failed before global login %s', trace_context)
                 return self.send_json({'message': 'SOOP 库存服务暂不可用，请稍后重试。'}, 503)
             if not inventory:
-                log_business_error('SOOP inventory mapping missing after activation-code lookup')
+                log_business_error(f'SOOP inventory mapping missing after activation-code lookup {trace_context}')
                 return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
             try:
                 login_info = get_global_login_info(username, password, inventory[1])
             except RuntimeError as exc:
                 if str(exc) == 'SOOP 解绑失败，请稍后重试。':
-                    log_business_error('SOOP unlink failed before global redemption', exc_info=True)
+                    log_business_error(f'SOOP unlink failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': 'SOOP 解绑失败，请稍后重试。'}, 502)
                 if str(exc) in ('SOOP 绑定失败，请稍后重试。', 'SOOP 绑定尚未生效，请稍后重试。'):
-                    log_business_error('SOOP binding failed before global redemption', exc_info=True)
+                    log_business_error(f'SOOP binding failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': str(exc)}, 502)
-                log_business_error('Global login service failed', exc_info=True)
+                log_business_error(f'Global login service failed {trace_context}', exc_info=True)
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             except Exception:
-                log_business_error('Global login service failed', exc_info=True)
+                log_business_error(f'Global login service failed {trace_context}', exc_info=True)
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             if not login_info or not login_info.get('authorization'):
-                log_business_error('Global login did not return authorization')
+                log_business_error(f'Global login did not return authorization {trace_context}')
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)
             player_name = str(login_info.get('globalNickname') or login_info.get('nickname') or login_info.get('gameName') or '全球账号')
             order_details = {'delivery_mode': 'global', 'player_name': player_name}
@@ -975,7 +981,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 reserved = reserve_global_code(code, claim_token)
             except Exception:
-                logger.exception('Activation-code reservation failed')
+                logger.exception('Activation-code reservation failed %s', trace_context)
                 return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
             if not reserved:
                 try:
@@ -991,9 +997,9 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     release_global_code_reservation(code, claim_token)
                 except Exception:
-                    logger.exception('Activation-code reservation release failed')
+                    logger.exception('Activation-code reservation release failed %s', trace_context)
                     return self.send_json({'message': 'SOOP 领取失败，兑换状态正在确认，请稍后查询结果。'}, 202)
-                logger.exception('SOOP reward claim failed after global login')
+                logger.exception('SOOP reward claim failed after global login %s', trace_context)
                 return self.send_json({'message': '全球账号登录成功，但 SOOP 宝箱领取失败，请稍后重试。'}, 502)
             try:
                 claimed = complete_global_code_claim(
@@ -1001,7 +1007,7 @@ class Handler(BaseHTTPRequestHandler):
                     [item_code_idx for item_code_idx, _ in claimed_items],
                 )
             except Exception:
-                logger.exception('Activation-code completion failed after SOOP claim')
+                logger.exception('Activation-code completion failed after SOOP claim %s', trace_context)
                 return self.send_json({'message': 'SOOP 宝箱已提交领取，兑换状态正在确认，请稍后查询结果。'}, 202)
             if not claimed:
                 return self.send_json({'message': '该激活码正在领取中，请稍后查询结果。'}, 409)
