@@ -44,7 +44,6 @@ GLOBAL_CODE_DB_CONFIG = {
     'read_timeout': 10,
     'write_timeout': 10,
 }
-GIFTS = {'TAECG5XVAQ8XQNQY414': {'reward': '战术补给箱 × 1', 'used': False}, 'DEMO2026DROP001': {'reward': '补给券 × 3', 'used': False}}
 ORDERS = {}
 SOOP_CLAIM_RETRIES = 3
 SOOP_CLAIM_RETRY_DELAY = 1.0
@@ -166,11 +165,15 @@ def mask_email(value):
 
 def redemption_trace_context(code, account):
     """Attach safe identifiers to redemption errors for cross-system tracing."""
-    return f'code={mask_value(code, prefix=4, suffix=4)} account={str(account).strip()}'
+    return f'code={mask_value(code, prefix=4, suffix=4)} account={mask_email(account)}'
 
 
 class GlobalLoginError(RuntimeError):
     """A safe summary of an authorization-stage failure."""
+
+
+class NoClaimableSoopRewardError(RuntimeError):
+    """The assigned SOOP inventory has no eligible KRAFTON reward left."""
 
 
 def summarize_global_login_error(error, stage_hint='', detail_stage=''):
@@ -216,6 +219,41 @@ def global_login_failure_message(error):
     if 'detail_stage=soop_bind_verify' in text:
         return 'SOOP 已授权，但绑定状态尚未生效，请稍后重试。'
     return '全球账号授权流程失败，请稍后重试。'
+
+
+def steam_login_failure_response(error):
+    """Translate Steam/KRAFTON login failures into safe customer actions."""
+    text = str(error or '')
+    lowered = text.casefold()
+    if 'invalidpassword' in lowered or 'x-eresult\': \'5\'' in lowered:
+        return 'Steam 账号或密码错误，请检查后重试。', 401, False
+    if any(value in lowered for value in ('steamguardrequired', 'steam guard verification is required', 'steam token verification is required', 'accountlogindeniedneedtwofactor', 'eresult=85')):
+        return '需要Steam令牌。', 428, True
+    if any(value in lowered for value in ('steam guard rejected', 'steam令牌校验失败', 'twofactorcodemismatch', 'eresult=88', 'eresult=89')):
+        return 'Steam令牌错误或已过期，请重新输入。', 401, True
+    if any(value in lowered for value in ('accountlogindeniedthrottle', 'limitexceeded', 'ratelimitexceeded', 'eresult=16', 'eresult=84', 'eresult=87')):
+        return 'Steam 登录尝试过于频繁，请稍后再试。', 429, False
+    if any(value in lowered for value in ('invalidloginauthcode', 'expiredloginauthcode', 'eresult=65', 'eresult=71')):
+        return 'Steam 账号需要邮箱验证码，请先在 Steam 客户端完成验证后重试。', 409, False
+    if any(value in lowered for value in ('accountlogondeniednomail', 'accountlogondeniedverifiedemailrequired', 'eresult=66', 'eresult=74')):
+        return 'Steam 账号邮箱尚未验证或不可用，请先在 Steam 客户端完成邮箱验证。', 409, False
+    if any(value in lowered for value in ('iploginrestrictionfailed', 'eresult=72')):
+        return 'Steam 检测到新的网络环境，请先在 Steam 客户端完成本次登录验证后重试。', 409, False
+    if any(value in lowered for value in ('accountlockeddown', 'accountdisabled', 'disabled', 'accessdenied', 'eresult=73', 'eresult=80')):
+        return 'Steam 账号当前无法登录，请检查账号状态后重试。', 403, False
+    if any(value in lowered for value in ('restricteddevice', 'eresult=82')):
+        return '当前设备不允许进行 Steam 登录，请改用常用设备后重试。', 403, False
+    if any(value in lowered for value in ('regionlocked', 'eresult=83')):
+        return 'Steam 账号在当前地区不可用，请切换至账号常用地区后重试。', 403, False
+    if 'pollauthsessionstatus timeout' in lowered:
+        return 'Steam 登录验证超时，请稍后重试。', 504, False
+    if 'healuprequired' in lowered or '需要补全/绑定资料' in lowered:
+        return '该 Steam 账号尚未完成 KRAFTON/KID 账号绑定，请先完成绑定后再提货。', 409, False
+    if any(value in lowered for value in ('oidcemailloginrequired', 'emailmfarequired', 'confirmemailrequired')):
+        return '关联的 KRAFTON/KID 账号需要额外验证，请先在官网完成验证后再提货。', 409, False
+    if 'serviceunavailable' in lowered or 'eresult=20' in lowered:
+        return 'Steam 登录服务暂时不可用，请稍后重试。', 503, False
+    return 'Steam 登录或 KRAFTON 授权失败，请确认账号已关联 KRAFTON/KID 后重试。', 503, False
 
 
 def soop_account_name_from_cookie(cookie):
@@ -521,8 +559,7 @@ def request_log_parameters(path, data):
     if path == '/api/redeem/global':
         parameters['username'] = mask_email(data.get('username', ''))
     elif path == '/api/redeem':
-        parameters['player_id'] = mask_value(data.get('player_id', ''))
-        parameters['player_name'] = mask_value(data.get('player_name', ''))
+        parameters['steam_user'] = mask_value(data.get('steam_user', ''))
     return parameters
 
 
@@ -572,6 +609,32 @@ def get_global_login_info(username, password, soop_cookie):
         # The getter retains the last authorization response in memory; discard it
         # immediately after this request, regardless of whether login succeeded.
         getter.last_login_info = None
+
+
+def get_steam_login_info(username, password, steam_token, soop_cookie):
+    """Authenticate Steam into KRAFTON, then attach the selected SOOP account."""
+    from global_login import krafton_pure_http_login as krafton_login
+    from global_login import steam_kid_login
+    from global_login.pubg_cookie_getter_http import (
+        bind_soop_to_session,
+        soop_cookie_from_session,
+        unbind_soop_if_linked,
+    )
+
+    session, steam_info = steam_kid_login.login_steam_to_kid_session(
+        username, password, steam_token, os.environ.get('GIFT_PORTAL_HTTP_PROXY') or None,
+    )
+    profile_response = krafton_login.profile(session)
+    profile_body = krafton_login.try_json(profile_response)
+    if profile_response.status_code != 200:
+        raise GlobalLoginError(f'KRAFTON profile 验证失败 HTTP {profile_response.status_code}')
+    unbind_soop_if_linked(session, profile_body)
+    bind_soop_to_session(session, soop_cookie)
+    return {
+        'status': 'success',
+        'steamid': steam_info.get('steamid'),
+        'soop_claim_cookie': soop_cookie_from_session(session, soop_cookie),
+    }
 
 
 def get_global_code_status(code):
@@ -679,7 +742,7 @@ def claim_soop_stock(inventory, claim_cookie=None):
         inventory_client.require_claimable(item)
         selected_items[item_code_idx] = item
     if not selected_items:
-        raise RuntimeError('SOOP 库存列表中没有可领取的 KRAFTON 奖励。')
+        raise NoClaimableSoopRewardError('SOOP 账号中没有可领取的奖励。')
 
     def claim_one(item_code_idx):
         """Each worker owns its HTTP session because requests sessions are not thread-safe."""
@@ -763,7 +826,7 @@ def release_global_code_reservation(code, claim_token):
         connection.close()
 
 
-def complete_global_code_claim(code, claim_token, claim_account, claim_password, product_name):
+def complete_global_code_claim(code, claim_token, claim_account, product_name):
     """Persist a completed claim; a failure leaves the durable reservation in processing."""
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
         raise RuntimeError("全球激活码数据库未配置。")
@@ -782,7 +845,7 @@ def complete_global_code_claim(code, claim_token, claim_account, claim_password,
                     '(activation_code_id, activation_code, claim_account, claim_password, product_name, claimed_at) '
                     'SELECT id, code, %s, %s, %s, UTC_TIMESTAMP() '
                     'FROM activation_codes WHERE code = %s',
-                    (claim_account, claim_password, product_name or '', code),
+                    (claim_account, '', product_name or '', code),
                 )
         connection.commit()
         return completed
@@ -1047,13 +1110,25 @@ class Handler(BaseHTTPRequestHandler):
             if code_status == 'processing':
                 return self.send_json({'message': '该激活码正在领取中，请稍后查询结果。'}, 409)
         else:
-            player_id = str(data.get('player_id', '')).strip(); player_name = str(data.get('player_name', '')).strip()
-            if len(player_id) < 3: return self.send_json({'message': '请填写完整的激活码和 Steam 账号。'}, 400)
-            gift = GIFTS.get(code)
-            if not gift: return self.send_json({'message': '激活码不存在或已失效。'}, 404)
-            if gift['used']: return self.send_json({'message': '该激活码已经使用过了。'}, 409)
+            username = str(data.get('steam_user', '')).strip()
+            password = str(data.get('steam_password', ''))
+            steam_token = str(data.get('steam_token', '')).strip()
+            if not username or not password:
+                return self.send_json({'message': '请填写完整的激活码、Steam 账号和密码。'}, 400)
+            trace_context = redemption_trace_context(code, username)
+            try:
+                code_status, reward, _ = get_global_code_status(code)
+            except Exception:
+                logger.exception('Activation-code database query failed %s', trace_context)
+                return self.send_json({'message': '激活码服务暂不可用，请稍后重试。'}, 503)
+            if code_status == 'missing':
+                return self.send_json({'message': '激活码不存在或已失效。'}, 404)
+            if code_status == 'used':
+                return self.send_json({'message': '该激活码已经使用过了。'}, 409)
+            if code_status == 'processing':
+                return self.send_json({'message': '该激活码正在领取中，请稍后查询结果。'}, 409)
 
-        if path == '/api/redeem/global':
+        if path in ('/api/redeem/global', '/api/redeem'):
             try:
                 inventory = get_soop_inventory_for_code(code)
             except LookupError as exc:
@@ -1070,14 +1145,32 @@ class Handler(BaseHTTPRequestHandler):
                 inventory[0], inventory[2], trace_context,
             )
             try:
-                login_info = get_global_login_info(username, password, inventory[1])
+                if path == '/api/redeem/global':
+                    login_info = get_global_login_info(username, password, inventory[1])
+                else:
+                    login_info = get_steam_login_info(username, password, steam_token, inventory[1])
+            except ValueError as exc:
+                if path == '/api/redeem':
+                    return self.send_json({'message': str(exc)}, 400)
+                raise
             except RuntimeError as exc:
                 if str(exc) == 'SOOP 解绑失败，请稍后重试。':
                     log_business_error(f'SOOP unlink failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': 'SOOP 解绑失败，请稍后重试。'}, 502)
-                if str(exc) in ('SOOP 绑定失败，请稍后重试。', 'SOOP 绑定尚未生效，请稍后重试。'):
+                if str(exc) in (
+                    'SOOP 绑定失败，请稍后重试。',
+                    'SOOP 绑定尚未生效，请稍后重试。',
+                    'SOOP 库存账号登录状态已过期，请在后台更新该库存账号的登录信息后重试。',
+                ):
                     log_business_error(f'SOOP binding failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': str(exc)}, 502)
+                if path == '/api/redeem':
+                    message, status, steam_guard_required = steam_login_failure_response(exc)
+                    log_business_error(f'Steam login failed {trace_context}', exc_info=True)
+                    response = {'message': message}
+                    if steam_guard_required:
+                        response['steam_guard_required'] = True
+                    return self.send_json(response, status)
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
                 return self.send_json({'message': global_login_failure_message(exc)}, 503)
             except Exception:
@@ -1086,12 +1179,15 @@ class Handler(BaseHTTPRequestHandler):
             if not login_info or login_info.get('status') != 'success':
                 log_business_error(f'Global login did not complete KRAFTON/SOOP connection {trace_context}')
                 return self.send_json({'message': '全球账号登录失败，请确认账号、密码正确，并关闭二级验证后重试。'}, 401)
-            player_name = str(login_info.get('globalNickname') or login_info.get('nickname') or login_info.get('gameName') or '全球账号')
-            order_details = {'delivery_mode': 'global', 'player_name': player_name}
+            if path == '/api/redeem/global':
+                player_name = str(login_info.get('globalNickname') or login_info.get('nickname') or login_info.get('gameName') or '全球账号')
+                order_details = {'delivery_mode': 'global', 'player_name': player_name}
+            else:
+                order_details = {'delivery_mode': 'steam', 'player_id': login_info.get('steamid') or username, 'player_name': username}
         else:
-            order_details = {'delivery_mode': 'steam', 'player_id': player_id, 'player_name': player_name}
+            order_details = {}
         order_id = 'DZ-' + datetime.now(timezone.utc).strftime('%y%m%d') + '-' + secrets.token_hex(3).upper()
-        if path == '/api/redeem/global':
+        if path in ('/api/redeem/global', '/api/redeem'):
             claim_token = secrets.token_hex(16)
             try:
                 reserved = reserve_global_code(code, claim_token)
@@ -1110,6 +1206,13 @@ class Handler(BaseHTTPRequestHandler):
                 _, reward, claimed_items = claim_soop_stock(
                     inventory, claim_cookie=login_info.get('soop_claim_cookie'),
                 )
+            except NoClaimableSoopRewardError:
+                try:
+                    release_global_code_reservation(code, claim_token)
+                except Exception:
+                    logger.exception('Activation-code reservation release failed %s', trace_context)
+                    return self.send_json({'message': 'SOOP 宝箱领取状态正在确认，请稍后查询结果。'}, 202)
+                return self.send_json({'message': 'SOOP 账号中没有可领取的奖励。'}, 409)
             except Exception:
                 try:
                     release_global_code_reservation(code, claim_token)
@@ -1120,16 +1223,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'message': '全球账号登录成功，但 SOOP 宝箱领取失败，请稍后重试。'}, 502)
             try:
                 claimed = complete_global_code_claim(
-                    code, claim_token, username, password, reward,
+                    code, claim_token, username, reward,
                 )
             except Exception:
                 logger.exception('Activation-code completion failed after SOOP claim %s', trace_context)
                 return self.send_json({'message': 'SOOP 宝箱已提交领取，兑换状态正在确认，请稍后查询结果。'}, 202)
             if not claimed:
                 return self.send_json({'message': '该激活码正在领取中，请稍后查询结果。'}, 409)
-        else:
-            gift['used'] = True
-            reward = gift['reward']
         ORDERS[order_id] = {'order_id': order_id, 'status': '处理中', 'reward': reward, 'message': '提交成功，请重启大厅。', **order_details}
         return self.send_json({'message': '提交成功', 'status': '处理中'}, 201)
     def log_message(self, fmt, *args):

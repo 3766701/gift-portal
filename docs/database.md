@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS activation_claims (
 | `activation_code_id` | 激活码表 ID |
 | `activation_code` | 激活码文本 |
 | `claim_account` | 前台提交的账号名 |
-| `claim_password` | 前台提交的账号密码 |
+| `claim_password` | 保留的旧字段；新领取记录写入空字符串，不保存前台密码。 |
 | `product_name` | Drops 库存接口返回的实际领取商品名（`itemName`） |
 | `claimed_at` | 领取时间 |
 

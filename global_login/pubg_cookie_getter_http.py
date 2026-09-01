@@ -48,6 +48,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("pubg_cookie_http.log", encoding="utf-8")],
 )
 logger = logging.getLogger(__name__)
+SOOP_INVENTORY_COOKIE_EXPIRED_MESSAGE = "SOOP 库存账号登录状态已过期，请在后台更新该库存账号的登录信息后重试。"
+
+
 def profile_has_soop_authentication(profile_body: Any) -> bool:
     """Return whether the documented profile authentication list contains SOOP."""
     if not isinstance(profile_body, dict):
@@ -116,6 +119,8 @@ def bind_soop_to_session(
     try:
         result = soop_link.link_soop(soop_cookie=soop_cookie, confirm=True, krafton_session=session)
     except (soop_link.LinkError, requests.RequestException) as exc:
+        if isinstance(exc, soop_link.LinkError) and "did not return to KRAFTON" in str(exc):
+            raise RuntimeError(SOOP_INVENTORY_COOKIE_EXPIRED_MESSAGE) from exc
         raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
     if result.status != "linked":
         raise RuntimeError("SOOP 绑定失败，请稍后重试。")
