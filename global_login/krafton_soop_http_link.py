@@ -20,7 +20,7 @@ import requests
 
 KRAFTON_HOST = "accounts.krafton.com"
 SOOP_SUFFIX = ".sooplive.com"
-LINK_URL = "https://accounts.krafton.com/v2/auth/soop"
+LINK_URL = "https://accounts.krafton.com/auth/soop"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
 
 
@@ -113,6 +113,8 @@ def link_soop(
 
     if urlparse(response.url).hostname != KRAFTON_HOST:
         raise LinkError("SOOP authorization did not return to KRAFTON; the SOOP Cookie may be expired.")
+    if urlparse(response.url).path.endswith("/web/login-main"):
+        return LinkResult("auth_required", "KRAFTON rejected the supplied session and redirected to login.", tuple(hops))
     return LinkResult("linked", "SOOP authorization returned to KRAFTON.", tuple(hops))
 
 
