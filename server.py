@@ -954,9 +954,9 @@ class Handler(BaseHTTPRequestHandler):
                 if str(exc) == 'SOOP 解绑失败，请稍后重试。':
                     log_business_error('SOOP unlink failed before global redemption', exc_info=True)
                     return self.send_json({'message': 'SOOP 解绑失败，请稍后重试。'}, 502)
-                if str(exc) == 'SOOP 绑定失败，请稍后重试。':
+                if str(exc) in ('SOOP 绑定失败，请稍后重试。', 'SOOP 绑定尚未生效，请稍后重试。'):
                     log_business_error('SOOP binding failed before global redemption', exc_info=True)
-                    return self.send_json({'message': 'SOOP 绑定失败，请稍后重试。'}, 502)
+                    return self.send_json({'message': str(exc)}, 502)
                 log_business_error('Global login service failed', exc_info=True)
                 return self.send_json({'message': '全球账号登录服务暂不可用，请稍后重试。'}, 503)
             except Exception:

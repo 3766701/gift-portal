@@ -93,6 +93,19 @@ class SoopUnbindTests(unittest.TestCase):
         getter.bind_soop_to_session(session, "AuthTicket=value")
         link_soop.assert_called_once_with(soop_cookie="AuthTicket=value", confirm=True, krafton_session=session)
 
+    @patch.object(getter.time, "sleep")
+    @patch.object(getter.kid, "profile")
+    @patch.object(getter.soop_link, "link_soop")
+    def test_waits_for_soop_binding_to_appear_in_profile(self, link_soop, profile, sleep):
+        link_soop.return_value = Mock(status="linked")
+        profile.side_effect = [
+            Response(200, {"authentications": [{"provider": "Steam"}]}),
+            Response(200, {"authentications": [{"provider": "SOOP"}]}),
+        ]
+        getter.bind_soop_to_session(Session(Response(204)), "AuthTicket=value")
+        self.assertEqual(profile.call_count, 2)
+        sleep.assert_called_once_with(getter.SOOP_BIND_VERIFY_DELAY_SECONDS)
+
     def test_multiline_cookie_is_normalized(self):
         self.assertEqual(
             normalize_cookie_header("AuthTicket=one\nUserTicket=two\r\nBbsTicket=three"),

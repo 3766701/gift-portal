@@ -48,6 +48,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("pubg_cookie_http.log", encoding="utf-8")],
 )
 logger = logging.getLogger(__name__)
+SOOP_BIND_VERIFY_ATTEMPTS = 5
+SOOP_BIND_VERIFY_DELAY_SECONDS = 1
 
 
 def profile_has_soop_authentication(profile_body: Any) -> bool:
@@ -111,17 +113,23 @@ def bind_soop_to_session(session: requests.Session, soop_cookie: str) -> None:
         raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
     if result.status != "linked":
         raise RuntimeError("SOOP 绑定失败，请稍后重试。")
-    try:
-        profile_response = kid.profile(session)
-    except requests.RequestException as exc:
-        raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
-    logger.info("SOOP bind verification response http=%s", profile_response.status_code)
-    if profile_response.status_code != 200:
-        raise RuntimeError("SOOP 绑定失败，请稍后重试。")
-    if not profile_has_soop_authentication(kid.try_json(profile_response)):
-        # The successful OAuth callback is authoritative; the profile endpoint
-        # can briefly return a stale connection list after a new bind.
-        logger.warning("SOOP OAuth callback succeeded but profile confirmation is not yet visible")
+    for attempt in range(1, SOOP_BIND_VERIFY_ATTEMPTS + 1):
+        try:
+            profile_response = kid.profile(session)
+        except requests.RequestException as exc:
+            raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
+        logger.info(
+            "SOOP bind verification response http=%s attempt=%s/%s",
+            profile_response.status_code, attempt, SOOP_BIND_VERIFY_ATTEMPTS,
+        )
+        if (
+            profile_response.status_code == 200
+            and profile_has_soop_authentication(kid.try_json(profile_response))
+        ):
+            return
+        if attempt < SOOP_BIND_VERIFY_ATTEMPTS:
+            time.sleep(SOOP_BIND_VERIFY_DELAY_SECONDS)
+    raise RuntimeError("SOOP 绑定尚未生效，请稍后重试。")
 
 
 # 登录相关错误映射：后端 message -> 前端 key -> 中文提示 -> 含义
