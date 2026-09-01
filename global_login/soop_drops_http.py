@@ -60,7 +60,7 @@ def normalize_cookie_header(raw_cookie: str) -> str:
     parts = []
     for item in re.split(r"[;\r\n]+", raw_cookie):
         name, separator, value = item.strip().partition("=")
-        if separator and name and value:
+        if separator and name:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
 

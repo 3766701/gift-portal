@@ -44,7 +44,7 @@ class LinkResult:
 def _cookie_items(raw_cookie: str) -> Iterable[tuple[str, str]]:
     for item in re.split(r"[;\r\n]+", raw_cookie):
         name, separator, value = item.strip().partition("=")
-        if separator and name and value:
+        if separator and name:
             yield name, value
 
 

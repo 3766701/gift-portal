@@ -334,7 +334,7 @@ def normalize_soop_cookie(raw_cookie):
     for name, value in cookie_values.items():
         name = str(name).strip()
         value = '' if value is None else str(value).strip()
-        if name and value:
+        if name:
             normalized.append(f'{name}={value}')
     if not normalized:
         raise ValueError('SOOP Cookie JSON 中没有可用字段。')

@@ -34,7 +34,13 @@ class SoopUnbindTests(unittest.TestCase):
         )
         self.assertEqual(
             entries[0][2],
-            'UserTicket=user-ticket; AuthTicket=auth-ticket; BbsTicket=bbs-ticket',
+            'UserTicket=user-ticket; AuthTicket=auth-ticket; BbsTicket=bbs-ticket; BbsSaveTicket=',
+        )
+
+    def test_cookie_normalization_preserves_empty_values(self):
+        self.assertEqual(
+            normalize_cookie_header('AuthTicket=value; BbsSaveTicket='),
+            'AuthTicket=value; BbsSaveTicket=',
         )
 
     def test_business_error_uses_error_level(self):
