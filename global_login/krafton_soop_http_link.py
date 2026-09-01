@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import os
+import re
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -105,6 +106,23 @@ def link_soop(
         response = _request(session, next_url, headers)
         hops.append((response.status_code, _host_path(response.url)))
         redirect = response.headers.get("Location")
+        # SOOP presents a consent page before issuing the authorization code.
+        # The form contains only the hidden ``authorized=yes`` field; the
+        # OAuth request URI (including state) is supplied in its action URL.
+        if host == "openapi.sooplive.com" and urlparse(response.url).path == "/policy/union_external":
+            action = re.search(r'<form[^>]+action="([^"]+)"', response.text, re.I)
+            if not action:
+                raise LinkError("SOOP consent form was not found.")
+            action_url = requests.compat.urljoin(response.url, action.group(1).replace("&amp;", "&"))
+            response = session.post(
+                action_url,
+                data={"authorized": "yes"},
+                headers={"Referer": response.url, "Origin": "https://openapi.sooplive.com", "User-Agent": USER_AGENT},
+                allow_redirects=False,
+                timeout=20,
+            )
+            hops.append((response.status_code, _host_path(response.url)))
+            redirect = response.headers.get("Location")
         if response.status_code not in (301, 302, 303, 307, 308) or not redirect:
             break
         next_url = requests.compat.urljoin(response.url, redirect)
