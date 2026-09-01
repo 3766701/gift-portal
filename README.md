@@ -24,3 +24,17 @@ python server.py
 提货方式由数据库表 `portal_feature_config` 控制，不依赖环境变量。`default` 配置用于生产服务器，默认关闭 Steam 提货和令牌扫码；可为开发机主机名新增一条配置以启用这两项。后端会同步拒绝已关闭的 Steam 提货接口。
 
 数据库表结构与核销 DDL 见 [docs/database.md](docs/database.md)。
+
+后台位于 `/gift/admin`。先执行数据库 DDL，再创建首个后台账号：
+
+```powershell
+python server.py --create-admin admin
+```
+
+命令会安全提示输入密码。登录后台后可批量导入 SOOP 库存、记录录入人、生成与库存一对一绑定的激活码，并分页搜索库存状态和领取记录。
+
+库存导入每行一条，使用竖线或 Tab 分隔：
+
+```text
+录入人|SOOP账号|商品名称|itemCodeIdx|SOOP Cookie
+```

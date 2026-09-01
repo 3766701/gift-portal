@@ -39,6 +39,7 @@ except Exception:  # pragma: no cover
     refresh_token = None
 
 from . import krafton_pure_http_login as kid
+from . import krafton_soop_http_link as soop_link
 from . import pubgselfservice_http_token as pubg_http
 
 logging.basicConfig(
@@ -47,6 +48,80 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("pubg_cookie_http.log", encoding="utf-8")],
 )
 logger = logging.getLogger(__name__)
+
+
+def profile_has_soop_authentication(profile_body: Any) -> bool:
+    """Return whether the documented profile authentication list contains SOOP."""
+    if not isinstance(profile_body, dict):
+        return False
+    authentications = profile_body.get("authentications")
+
+    def is_soop(entry: Any) -> bool:
+        if isinstance(entry, str):
+            return entry.strip().casefold() == "soop"
+        if isinstance(entry, (list, tuple)):
+            return any(is_soop(value) for value in entry)
+        if not isinstance(entry, dict):
+            return False
+        return any(is_soop(value) for value in entry.values())
+
+    return is_soop(authentications)
+
+
+def unbind_soop_if_linked(session: requests.Session, profile_body: Any) -> bool:
+    """Unlink SOOP from the logged-in KRAFTON session and verify the result."""
+    if not profile_has_soop_authentication(profile_body):
+        return False
+
+    try:
+        response = session.delete(
+            f"{kid.BASE}/auth/soop",
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"{kid.BASE}/v2/en/settings/connections-accounts",
+                "User-Agent": kid.UA,
+            },
+            timeout=30,
+            allow_redirects=False,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("SOOP 解绑失败，请稍后重试。") from exc
+
+    logger.info("SOOP unlink response http=%s", response.status_code)
+    if response.status_code not in (200, 204):
+        raise RuntimeError("SOOP 解绑失败，请稍后重试。")
+
+    try:
+        verified_profile = kid.profile(session)
+    except requests.RequestException as exc:
+        raise RuntimeError("SOOP 解绑失败，请稍后重试。") from exc
+    logger.info("SOOP unlink verification response http=%s", verified_profile.status_code)
+    if verified_profile.status_code != 200:
+        raise RuntimeError("SOOP 解绑失败，请稍后重试。")
+    if profile_has_soop_authentication(kid.try_json(verified_profile)):
+        raise RuntimeError("SOOP 解绑失败，请稍后重试。")
+    return True
+
+
+def bind_soop_to_session(session: requests.Session, soop_cookie: str) -> None:
+    """Bind the logged-in KRAFTON account to a SOOP account and verify it."""
+    try:
+        result = soop_link.link_soop(soop_cookie=soop_cookie, confirm=True, krafton_session=session)
+    except (soop_link.LinkError, requests.RequestException) as exc:
+        raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
+    if result.status != "linked":
+        raise RuntimeError("SOOP 绑定失败，请稍后重试。")
+    try:
+        profile_response = kid.profile(session)
+    except requests.RequestException as exc:
+        raise RuntimeError("SOOP 绑定失败，请稍后重试。") from exc
+    logger.info("SOOP bind verification response http=%s", profile_response.status_code)
+    if profile_response.status_code != 200:
+        raise RuntimeError("SOOP 绑定失败，请稍后重试。")
+    if not profile_has_soop_authentication(kid.try_json(profile_response)):
+        # The successful OAuth callback is authoritative; the profile endpoint
+        # can briefly return a stale connection list after a new bind.
+        logger.warning("SOOP OAuth callback succeeded but profile confirmation is not yet visible")
 
 
 # 登录相关错误映射：后端 message -> 前端 key -> 中文提示 -> 含义
@@ -677,6 +752,7 @@ class PUBGCookieGetter:
         username: str,
         password: str,
         akamai_js_url: str,
+        soop_cookie: str = "",
         gui_instance=None,
         display_name: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -754,10 +830,11 @@ class PUBGCookieGetter:
         pbody = kid.try_json(rp)
         trace["profile_status"] = rp.status_code
         if rp.status_code != 200:
-            raise RuntimeError(f"KRAFTON profile 验证失败 HTTP {rp.status_code}: {str(pbody)[:300]}")
-        if isinstance(pbody, dict):
-            trace["profile_email"] = pbody.get("email")
-            trace["profile_username"] = pbody.get("username")
+            raise RuntimeError(f"KRAFTON profile 验证失败 HTTP {rp.status_code}")
+        trace["soop_unbound"] = unbind_soop_if_linked(s, pbody)
+        if soop_cookie:
+            bind_soop_to_session(s, soop_cookie)
+            trace["soop_bound"] = True
         return trace
 
     def get_authorization_info(
@@ -766,6 +843,7 @@ class PUBGCookieGetter:
         password: str,
         gui_instance=None,
         display_name: Optional[str] = None,
+        soop_cookie: str = "",
     ) -> Optional[Dict[str, Any]]:
         """返回完整登录信息 dict；失败返回 None。GUI 旧逻辑可继续用 get_authorization() 只取 focToken。"""
         start = time.time()
@@ -783,6 +861,7 @@ class PUBGCookieGetter:
                 username,
                 password,
                 akamai_js_url,
+                soop_cookie=soop_cookie,
                 gui_instance=gui_instance,
                 display_name=display_name,
             )
@@ -850,6 +929,10 @@ class PUBGCookieGetter:
         except Exception as e:
             # 非 KRAFTON 登录阶段的异常，也尽量尝试做错误码映射。
             error_text = str(e)
+            if error_text in ("SOOP 解绑失败，请稍后重试。", "SOOP 绑定失败，请稍后重试。"):
+                self.last_login_info = {"status": "error", "error": error_text, "elapsed_s": round(time.time() - start, 2)}
+                logger.warning("%s----SOOP account connection failed", user_tag)
+                raise
             self.last_login_info = {"status": "error", "username": username, "error": str(e), "elapsed_s": round(time.time() - start, 2)}
 
             # 登录失败提示已在 _login_krafton 中输出，不再重复刷技术细节到 GUI。

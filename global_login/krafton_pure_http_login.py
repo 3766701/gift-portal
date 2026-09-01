@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -57,6 +59,7 @@ BITBROWSER_API_URL = os.environ.get("BITBROWSER_API_URL", "http://127.0.0.1:5434
 BITBROWSER_PROFILE_ID = os.environ.get("BITBROWSER_PROFILE_ID") or None
 BITBROWSER_PROFILE_NAME = os.environ.get("BITBROWSER_PROFILE_NAME", "PUBG_Worker_50")
 BITBROWSER_KEEP_OPEN = os.environ.get("BITBROWSER_KEEP_OPEN", "1") == "1"
+_PERSIST_ARTIFACTS = ContextVar("krafton_persist_artifacts", default=True)
 
 LOGIN_MESSAGE_MAP: Dict[str, Dict[str, str]] = {
     "error.invalid-csrf-token": {
@@ -187,7 +190,19 @@ HTTP_STATUS_HINTS: Dict[int, Dict[str, str]] = {
 }
 
 
+@contextmanager
+def suppress_artifact_persistence():
+    """Disable credential-bearing diagnostics for one request context."""
+    token = _PERSIST_ARTIFACTS.set(False)
+    try:
+        yield
+    finally:
+        _PERSIST_ARTIFACTS.reset(token)
+
+
 def save_json(path: Path, data: Any) -> None:
+    if not _PERSIST_ARTIFACTS.get():
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -211,6 +226,8 @@ def snapshot(r: requests.Response) -> Dict[str, Any]:
 
 
 def save_cookies(s: requests.Session) -> None:
+    if not _PERSIST_ARTIFACTS.get():
+        return
     rows = []
     for c in s.cookies:
         rows.append({

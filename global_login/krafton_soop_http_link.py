@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import os
 import re
+import logging
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ KRAFTON_HOST = "accounts.krafton.com"
 SOOP_SUFFIX = ".sooplive.com"
 LINK_URL = "https://accounts.krafton.com/auth/soop"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
+logger = logging.getLogger("soop.link")
 
 
 class LinkError(RuntimeError):
@@ -40,7 +42,7 @@ class LinkResult:
 
 
 def _cookie_items(raw_cookie: str) -> Iterable[tuple[str, str]]:
-    for item in raw_cookie.replace("\r", " ").replace("\n", " ").split(";"):
+    for item in re.split(r"[;\r\n]+", raw_cookie):
         name, separator, value = item.strip().partition("=")
         if separator and name and value:
             yield name, value
@@ -58,7 +60,9 @@ def _host_path(url: str) -> str:
 
 
 def _request(session: requests.Session, url: str, headers: dict[str, str]) -> requests.Response:
-    return session.get(url, headers=headers, allow_redirects=False, timeout=20)
+    response = session.get(url, headers=headers, allow_redirects=False, timeout=20)
+    logger.info("SOOP link response http=%s location=%s", response.status_code, _host_path(response.headers.get("Location", "")) if response.headers.get("Location") else "-")
+    return response
 
 
 def link_soop(
@@ -67,6 +71,7 @@ def link_soop(
     krafton_session_cookie: str = "",
     soop_cookie: str,
     confirm: bool = False,
+    krafton_session: requests.Session | None = None,
 ) -> LinkResult:
     """Start or complete a KRAFTON-to-SOOP OAuth link.
 
@@ -77,13 +82,14 @@ def link_soop(
     """
     if not soop_cookie.strip():
         raise LinkError("SOOP Cookie is required.")
-    if not kid_access_token.strip() and not krafton_session_cookie.strip():
+    if not kid_access_token.strip() and not krafton_session_cookie.strip() and krafton_session is None:
         raise LinkError("A KRAFTON KID token or accounts.krafton.com session cookie is required.")
 
-    session = requests.Session()
+    session = krafton_session or requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
     _add_domain_cookies(session, soop_cookie, SOOP_SUFFIX)
-    _add_domain_cookies(session, krafton_session_cookie, KRAFTON_HOST)
+    if krafton_session_cookie.strip():
+        _add_domain_cookies(session, krafton_session_cookie, KRAFTON_HOST)
 
     krafton_headers = {"Referer": "https://accounts.krafton.com/v2/en/settings/connections-accounts"}
     if kid_access_token.strip():
@@ -121,6 +127,7 @@ def link_soop(
                 allow_redirects=False,
                 timeout=20,
             )
+            logger.info("SOOP consent response http=%s location=%s", response.status_code, _host_path(response.headers.get("Location", "")) if response.headers.get("Location") else "-")
             hops.append((response.status_code, _host_path(response.url)))
             redirect = response.headers.get("Location")
         if response.status_code not in (301, 302, 303, 307, 308) or not redirect:
