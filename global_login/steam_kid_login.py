@@ -1671,7 +1671,7 @@ def login_steam_to_kid_session(
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 session = make_session(proxy)
-                prewarm_akamai_like_pubg_cookie(session, proxy=None)
+                prewarm_akamai_like_pubg_cookie(session, proxy=proxy)
                 oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
                 steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
                 login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)

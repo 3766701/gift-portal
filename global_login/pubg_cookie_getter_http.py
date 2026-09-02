@@ -866,9 +866,14 @@ class PUBGCookieGetter:
                     info = kid.classify_response(r, body)
                     if info:
                         display_tip = info.get("zh") or info.get("meaning") or ""
-                    if not display_tip:
-                        display_tip = msg or "登录失败，请稍后重试。"
-                    self._gui_log(gui_instance, f"{user_tag}----登录失败: {display_tip}", "ERROR")
+            if not display_tip:
+                display_tip = msg or "登录失败，请稍后重试。"
+            error_code = body.get("errorCode") or body.get("error_code") or body.get("code") if isinstance(body, dict) else None
+            logger.error(
+                "%s----KRAFTON login response status=%s errorCode=%s message=%s",
+                user_tag, r.status_code, error_code or "-", display_tip,
+            )
+            self._gui_log(gui_instance, f"{user_tag}----登录失败: {display_tip}", "ERROR")
 
             raise RuntimeError(f"KRAFTON 登录失败 HTTP {r.status_code}: {display_tip}")
 
@@ -900,12 +905,18 @@ class PUBGCookieGetter:
         start = time.time()
         user_tag = self._format_user_tag(username, display_name)
         stage = "akamai_seed"
+        seed_source = "unavailable"
+        akamai_js_found = False
+        seed_cookie_names: list[str] = []
         try:
             seed_entry = _AbckPool.get_seed_entry(proxy=self.http_proxy)
+            seed_source = str(seed_entry.get("seed_source") or "unknown")
             seed_abck = str(seed_entry.get("abck") or "")
             akamai_js_url = str(seed_entry.get("akamai_js_url") or "")
+            akamai_js_found = bool(akamai_js_url)
             s = self._make_seeded_session(seed_entry)
             initial_cookies = [c.name for c in s.cookies]
+            seed_cookie_names = initial_cookies
             logger.info("%s----HTTP 开始获取 Authorization，seed_source=%s seed_abck=%s...", user_tag, seed_entry.get("seed_source"), seed_abck[:12])
 
             stage = "krafton_login"
@@ -1021,6 +1032,10 @@ class PUBGCookieGetter:
             failure = {
                 "status": "error", "username": username, "error": error_text,
                 "stage": stage, "detail_stage": detail_stage,
+                "seed_source": seed_source,
+                "akamai_js_found": akamai_js_found,
+                "seed_cookie_names": seed_cookie_names,
+                "proxy_configured": bool(self.http_proxy),
                 "kid": safe_kid_trace, "elapsed_s": round(time.time() - start, 2),
             }
             if error_text in ("SOOP 解绑失败，请稍后重试。", "SOOP 绑定失败，请稍后重试。"):

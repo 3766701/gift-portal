@@ -590,7 +590,10 @@ def get_global_login_info(username, password, soop_cookie):
 
             # The bundled module logs account-level diagnostics by default.
             # Portal requests must not persist account identifiers or tokens.
-            global_login_logger.disabled = True
+            # Keep only error diagnostics from the getter; these include
+            # status/error codes but never credentials or tokens.
+            global_login_logger.disabled = False
+            global_login_logger.setLevel(logging.ERROR)
             GLOBAL_LOGIN_GETTER_CLASS = PUBGCookieGetter
 
         getter = GLOBAL_LOGIN_GETTER_CLASS()
@@ -606,6 +609,13 @@ def get_global_login_info(username, password, soop_cookie):
         if login_info:
             return login_info
         failure = getter.get_last_login_info() or {}
+        logger.error(
+            'Global login diagnostic stage=%s detail_stage=%s error=%s elapsed_s=%s',
+            failure.get('stage', 'unknown'),
+            failure.get('detail_stage', ''),
+            failure.get('error', ''),
+            failure.get('elapsed_s', ''),
+        )
         raise GlobalLoginError(summarize_global_login_error(
             failure.get('error'), failure.get('stage'), failure.get('detail_stage'),
         ))
