@@ -26,6 +26,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 LOG_PATH = ROOT / 'gift_portal.log'
 LOGIN_RUNTIME_LOG_PATH = ROOT / 'login_runtime.log'
+STEAM_KID_PROXY = 'http://127.0.0.1:7890'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
@@ -731,7 +732,6 @@ def get_global_login_info(username, password, soop_cookie):
 def get_steam_login_info(username, password, steam_token, soop_cookie):
     """Authenticate Steam into KRAFTON, then attach the selected SOOP account."""
     from global_login import krafton_pure_http_login as krafton_login
-    from global_login.qg_proxy import QGProxyError, fetch_proxies
     from global_login import steam_kid_login
     from global_login.pubg_cookie_getter_http import (
         bind_soop_to_session,
@@ -739,26 +739,9 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
         unbind_soop_if_linked,
     )
 
-    # Prefer the portal-specific setting, then honor standard proxy
-    # environment variables so local Mihomo/Clash works without extra
-    # application-specific configuration.
-    fallback_proxy = (
-        os.environ.get('GIFT_PORTAL_HTTP_PROXY')
-        or os.environ.get('HTTPS_PROXY')
-        or os.environ.get('https_proxy')
-        or os.environ.get('HTTP_PROXY')
-        or os.environ.get('http_proxy')
-        or None
-    )
+    fallback_proxy = STEAM_KID_PROXY
     proxies = [fallback_proxy]
-    qg_selected = False
-    if os.environ.get('GIFT_PORTAL_QG_PROXY_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}:
-        try:
-            proxies = fetch_proxies(count=5)
-            qg_selected = True
-            logger.info('QG Steam proxies selected count=%s', len(proxies))
-        except QGProxyError as exc:
-            logger.warning('QG Steam proxy unavailable; using configured fallback: %s', exc)
+    logger.info('Steam KID using local proxy host=127.0.0.1:7890')
     last_proxy_error = None
     for proxy in proxies:
         try:
@@ -771,10 +754,7 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
             logger.warning('Steam proxy failed host=%s error=%s', proxy_host, type(exc).__name__)
             continue
     else:
-        if qg_selected and fallback_proxy not in proxies:
-            logger.warning('All QG Steam proxies failed; retrying configured fallback=%s', bool(fallback_proxy))
-            session, steam_info = steam_kid_login.login_steam_to_kid_session(username, password, steam_token, fallback_proxy)
-        elif last_proxy_error:
+        if last_proxy_error:
             raise last_proxy_error
     profile_response = krafton_login.profile(session)
     profile_body = krafton_login.try_json(profile_response)

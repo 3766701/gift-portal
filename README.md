@@ -13,9 +13,7 @@ python server.py
 
 `/gift` 是唯一可访问的应用路径；未带此前缀的页面和 API 会返回 `404`。接口使用 `/gift/api/...`。
 
-Steam 提货默认在每次登录前从 QG overseas `/get` 接口提取短效 HTTP 代理，使用返回的 `data[0].server`。可用 `GIFT_PORTAL_QG_PROXY_KEY` 覆盖 Key；若 QG 产品启用了 Authpwd，设置 `GIFT_PORTAL_QG_PROXY_PASSWORD`（用户名默认使用 Key，也可用 `GIFT_PORTAL_QG_PROXY_USERNAME` 覆盖）。设置 `GIFT_PORTAL_QG_PROXY_ENABLED=0` 可关闭；接口失败时回退到 `GIFT_PORTAL_HTTP_PROXY`，未配置则直连。
-
-使用本机 Mihomo/Clash 时可关闭 QG 并设置标准代理变量。Linux/macOS：`export GIFT_PORTAL_QG_PROXY_ENABLED=0`、`export http_proxy=http://127.0.0.1:7890`、`export https_proxy=http://127.0.0.1:7890`；PowerShell：`$env:GIFT_PORTAL_QG_PROXY_ENABLED='0'`、`$env:http_proxy='http://127.0.0.1:7890'`、`$env:https_proxy='http://127.0.0.1:7890'`。也可使用 `GIFT_PORTAL_HTTP_PROXY` 覆盖代理地址。
+Steam 提货的 KID 登录固定使用本机 Mihomo/Clash HTTP 代理 `http://127.0.0.1:7890`，不读取代理环境变量，也不使用 QG 代理。请先启动本机 Mihomo 并监听该端口。
 
 全球提货和 Steam 提货会在服务端验证账号密码。账号、密码、Steam令牌和授权令牌不会保存到订单数据或返回给浏览器。Steam 账户需要关联已有 KRAFTON/KID 账号；需要二次验证时页面会要求输入 Steam手机令牌或备用码。
 
