@@ -34,6 +34,7 @@
           <button class="nav-item" type="button" data-view="inventory-view">库存管理</button>
           <button class="nav-item" type="button" data-view="claims-view">领取记录</button>
           <button class="nav-item" type="button" data-view="runtime-view">运行状态</button>
+          <button class="nav-item" type="button" data-view="runtime-settings-view">运行配置</button>
           <button class="nav-item" type="button" data-view="system-logs-view">系统日志</button>
         </aside>
         <div class="admin-content">
@@ -105,14 +106,38 @@
                 <div class="runtime-item"><span>占用中 seed</span><strong id="runtime-seed-in-use">--</strong></div><div class="runtime-item"><span>可复用 seed</span><strong id="runtime-seed-reusable">--</strong></div>
               </div></section><section class="runtime-module"><h2>Clash 模块</h2><div class="runtime-grid"><div class="runtime-item"><span>代理组</span><strong id="runtime-clash-group">--</strong></div><div class="runtime-item"><span>节点数量</span><strong id="runtime-clash-count">--</strong></div><div class="runtime-item"><span>当前 Steam 代理节点</span><strong id="runtime-clash-node">--</strong></div>
               </div><div class="runtime-actions"><button id="switch-clash-node" class="layui-btn layui-btn-primary" type="button">切换线路</button><button id="best-clash-node" class="layui-btn" type="button">最佳线路</button></div></section>
+              <p id="runtime-status-message" class="form-message"></p>
+            </section>
+          </section>
+
+          <section id="runtime-settings-view" class="admin-page" hidden>
+            <section class="admin-card runtime-card">
               <form id="runtime-settings-form" class="runtime-settings-form">
-                <h2>运行配置</h2>
-                <label>Seed 代理 1<input id="seed-proxy-1" class="layui-input" type="text" placeholder="http://HOST:PORT"></label>
-                <label>Seed 代理 2<input id="seed-proxy-2" class="layui-input" type="text" placeholder="http://USER:PASSWORD@HOST:PORT"></label>
-                <label>Seed 池容量<input id="seed-capacity" class="layui-input" type="number" min="1" max="50" step="1"></label>
-                <label>代理组<input id="clash-proxy-group" class="layui-input" type="text" placeholder="🔰国外流量"></label>
-                <label>测速 URL<input id="clash-test-url" class="layui-input" type="url" placeholder="https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"></label>
-                <div><button class="layui-btn" type="submit">保存配置</button></div>
+                <div class="settings-heading"><div><span class="settings-eyebrow">SERVICE CONTROLS</span><h2>运行配置</h2></div><p>修改后立即作用于当前服务。</p></div>
+                <section class="settings-section feature-settings">
+                  <div class="settings-section-title"><h3>提货方式</h3><p>服务器对外公开的提货入口；本机 localhost 始终开放全部方式。</p></div>
+                  <div class="feature-toggle-grid">
+                    <label class="feature-toggle"><input id="feature-global-enabled" type="checkbox"><span class="toggle-control"></span><span><strong>全球提货</strong><small>全球 KRAFTON 账号登录</small></span></label>
+                    <label class="feature-toggle"><input id="feature-steam-enabled" type="checkbox"><span class="toggle-control"></span><span><strong>Steam 提货</strong><small>Steam OAuth 登录流程</small></span></label>
+                    <label class="feature-toggle"><input id="feature-qr-enabled" type="checkbox"><span class="toggle-control"></span><span><strong>令牌扫码提货</strong><small>扫码授权提货流程</small></span></label>
+                  </div>
+                </section>
+                <section class="settings-section">
+                  <div class="settings-section-title"><h3>Seed 池</h3><p>配置 RiskByPass seed 的后台补种代理与未使用容量目标。</p></div>
+                  <div class="settings-fields">
+                    <label>Seed 代理 1<input id="seed-proxy-1" class="layui-input" type="text" placeholder="http://HOST:PORT"></label>
+                    <label>Seed 代理 2<input id="seed-proxy-2" class="layui-input" type="text" placeholder="http://USER:PASSWORD@HOST:PORT"></label>
+                    <label>Seed 池容量<input id="seed-capacity" class="layui-input" type="number" min="1" max="50" step="1"></label>
+                  </div>
+                </section>
+                <section class="settings-section">
+                  <div class="settings-section-title"><h3>Clash 线路</h3><p>用于 Steam 登录的代理组和节点测速地址。</p></div>
+                  <div class="settings-fields">
+                    <label>代理组<input id="clash-proxy-group" class="layui-input" type="text" placeholder="🔰国外流量"></label>
+                    <label class="wide-field">测速 URL<input id="clash-test-url" class="layui-input" type="url" placeholder="https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"></label>
+                  </div>
+                </section>
+                <div class="settings-submit"><button class="layui-btn" type="submit">保存全部配置</button></div>
               </form>
               <p id="runtime-message" class="form-message"></p>
             </section>

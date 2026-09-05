@@ -142,6 +142,63 @@ _SYSTEM_LOG_WRITE_GUARD = threading.local()
 _SYSTEM_LOG_SECRET_PATTERN = re.compile(r'(?i)(cookie|password|authorization|bearer|authticket|userticket|bbsticket)\s*[=:]\s*[^\s,;\'"}]+')
 _GLOBAL_LOGIN_HTTP_STATUS_PATTERN = re.compile(r'\bHTTP\s+(\d{3})\b', re.I)
 _GLOBAL_LOGIN_ERROR_CODE_PATTERN = re.compile(r'(?i)(?:errorCode|error_code|code)[\'"\s]*[:=][\s\'"`]*([A-Za-z0-9_.-]+)')
+RISKBYPASS_BALANCE_REFRESH_SECONDS = 60
+_RISKBYPASS_BALANCE_LOCK = threading.Lock()
+_RISKBYPASS_BALANCE = None
+_RISKBYPASS_BALANCE_ERROR = None
+_RISKBYPASS_BALANCE_UPDATED_AT = None
+_RISKBYPASS_BALANCE_THREAD = None
+
+
+def refresh_riskbypass_balance():
+    """在后台查询余额，避免管理接口请求同步等待 RiskByPass API。"""
+    global _RISKBYPASS_BALANCE, _RISKBYPASS_BALANCE_ERROR, _RISKBYPASS_BALANCE_UPDATED_AT
+    try:
+        from global_login import krafton_pure_http_login as krafton_login
+        from riskbypass import RiskByPassClient
+
+        balance = RiskByPassClient(
+            token=krafton_login.load_riskbypass_token()
+        ).check_balance()
+    except Exception as exc:
+        with _RISKBYPASS_BALANCE_LOCK:
+            _RISKBYPASS_BALANCE_ERROR = type(exc).__name__
+            _RISKBYPASS_BALANCE_UPDATED_AT = time.time()
+        logger.warning('RiskByPass balance refresh failed: %s', type(exc).__name__)
+        return
+    with _RISKBYPASS_BALANCE_LOCK:
+        _RISKBYPASS_BALANCE = balance
+        _RISKBYPASS_BALANCE_ERROR = None
+        _RISKBYPASS_BALANCE_UPDATED_AT = time.time()
+
+
+def start_riskbypass_balance_refresh():
+    """启动唯一的余额缓存刷新线程；首次启动时立即刷新一次。"""
+    global _RISKBYPASS_BALANCE_THREAD
+    with _RISKBYPASS_BALANCE_LOCK:
+        if _RISKBYPASS_BALANCE_THREAD and _RISKBYPASS_BALANCE_THREAD.is_alive():
+            return
+
+        def worker():
+            while True:
+                refresh_riskbypass_balance()
+                time.sleep(RISKBYPASS_BALANCE_REFRESH_SECONDS)
+
+        _RISKBYPASS_BALANCE_THREAD = threading.Thread(
+            target=worker,
+            name='riskbypass-balance-refresh',
+            daemon=True,
+        )
+        _RISKBYPASS_BALANCE_THREAD.start()
+
+
+def get_cached_riskbypass_balance():
+    with _RISKBYPASS_BALANCE_LOCK:
+        return (
+            _RISKBYPASS_BALANCE,
+            _RISKBYPASS_BALANCE_ERROR,
+            _RISKBYPASS_BALANCE_UPDATED_AT,
+        )
 
 
 def redact_log_text(value, limit):
@@ -254,6 +311,10 @@ def redemption_trace_context(code, account):
 
 class GlobalLoginError(RuntimeError):
     """A safe summary of an authorization-stage failure."""
+
+
+class SeedUnavailableError(GlobalLoginError):
+    """The global KRAFTON login cannot start because no seed is available."""
 
 
 class NoClaimableSoopRewardError(RuntimeError):
@@ -713,6 +774,14 @@ def get_global_login_info(username, password, soop_cookie):
         failure_error = str(failure.get('error') or '')
         if 'SOOP 库存账号登录状态已过期' in failure_error:
             raise GlobalLoginError(failure_error)
+        if any(marker in failure_error for marker in (
+            'RiskByPass seed 池暂无可用 seed',
+            'RiskByPass seed 池等待超时',
+            'RiskByPass seed 池补种失败',
+            'RiskByPass 串行初始化未获得有效 seed',
+            'RiskByPass 未返回有效 _abck',
+        )):
+            raise SeedUnavailableError('RiskByPass seed 池暂无可用 seed')
         logger.error(
             'Global login diagnostic stage=%s detail_stage=%s error=%s elapsed_s=%s',
             failure.get('stage', 'unknown'),
@@ -853,6 +922,34 @@ def ensure_inventory_schema():
             cursor.execute("SHOW COLUMNS FROM activation_claims LIKE 'claimed_item_code_idxs'")
             if cursor.fetchone():
                 cursor.execute('ALTER TABLE activation_claims DROP COLUMN claimed_item_code_idxs')
+    finally:
+        connection.close()
+
+
+def ensure_feature_config_schema():
+    """创建并迁移三种提货方式的开关配置表。"""
+    if pymysql is None:
+        return
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=True)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'CREATE TABLE IF NOT EXISTS portal_feature_config ('
+                'scope VARCHAR(128) NOT NULL PRIMARY KEY, '
+                'global_enabled TINYINT(1) NOT NULL DEFAULT 1, '
+                'steam_enabled TINYINT(1) NOT NULL DEFAULT 0, '
+                'qr_enabled TINYINT(1) NOT NULL DEFAULT 0, '
+                'updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP '
+                'ON UPDATE CURRENT_TIMESTAMP'
+                ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+            )
+            cursor.execute("SHOW COLUMNS FROM portal_feature_config LIKE 'global_enabled'")
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    'ALTER TABLE portal_feature_config '
+                    'ADD COLUMN global_enabled TINYINT(1) NOT NULL DEFAULT 1 '
+                    'AFTER scope'
+                )
     finally:
         connection.close()
 
@@ -1011,8 +1108,16 @@ def complete_global_code_claim(code, claim_token, claim_account, product_name):
         connection.close()
 
 
-def get_feature_config():
+def is_loopback_request(headers):
+    """Local browser testing always exposes all redemption methods."""
+    host = str(headers.get('Host', '')).split(':', 1)[0].strip().casefold()
+    return host in ('localhost', '127.0.0.1', '::1')
+
+
+def get_feature_config(local_access=False):
     """Read feature switches from MySQL, preferring this machine's override."""
+    if local_access:
+        return {'global': True, 'steam': True, 'qr': True}
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
         raise RuntimeError('Feature configuration database is unavailable.')
     hostname = socket.gethostname()
@@ -1020,7 +1125,7 @@ def get_feature_config():
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                'SELECT steam_enabled, qr_enabled FROM portal_feature_config '
+                'SELECT global_enabled, steam_enabled, qr_enabled FROM portal_feature_config '
                 'WHERE scope IN (%s, %s) ORDER BY scope = %s DESC LIMIT 1',
                 (hostname, 'default', hostname),
             )
@@ -1028,8 +1133,27 @@ def get_feature_config():
     finally:
         connection.close()
     if row is None:
-        return {'steam': False, 'qr': False}
-    return {'steam': bool(row[0]), 'qr': bool(row[1])}
+        return {'global': True, 'steam': False, 'qr': False}
+    return {'global': bool(row[0]), 'steam': bool(row[1]), 'qr': bool(row[2])}
+
+
+def set_feature_config(global_enabled, steam_enabled, qr_enabled):
+    """更新当前服务器的公开提货方式配置。"""
+    if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
+        raise RuntimeError('Feature configuration database is unavailable.')
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=True)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO portal_feature_config (scope, global_enabled, steam_enabled, qr_enabled) '
+                'VALUES (%s, %s, %s, %s) '
+                'ON DUPLICATE KEY UPDATE global_enabled = VALUES(global_enabled), '
+                'steam_enabled = VALUES(steam_enabled), '
+                'qr_enabled = VALUES(qr_enabled)',
+                (socket.gethostname(), int(global_enabled), int(steam_enabled), int(qr_enabled)),
+            )
+    finally:
+        connection.close()
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200, headers=None):
@@ -1066,13 +1190,8 @@ class Handler(BaseHTTPRequestHandler):
                 from global_login import krafton_pure_http_login as krafton_login
                 from global_login.vpn_switcher import get_vpn_switcher
                 seed_status = krafton_login._AbckPool.status()
-                balance = None
-                balance_error = None
-                try:
-                    from riskbypass import RiskByPassClient
-                    balance = RiskByPassClient(token=krafton_login.load_riskbypass_token()).check_balance()
-                except Exception as exc:
-                    balance_error = type(exc).__name__
+                balance, balance_error, balance_updated_at = get_cached_riskbypass_balance()
+                features = get_feature_config()
                 switcher = get_vpn_switcher()
                 return self.send_json({
                     'seed': {
@@ -1084,7 +1203,9 @@ class Handler(BaseHTTPRequestHandler):
                         'proxies': krafton_login._AbckPool.runtime_proxies(),
                         'balance': balance,
                         'balance_error': balance_error,
+                        'balance_updated_at': balance_updated_at,
                     },
+                    'features': features,
                     'clash': {
                         'available': bool(switcher.is_vpn_available()),
                         'group': switcher.get_proxy_group(),
@@ -1151,7 +1272,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/health': return self.send_json({'ok': True, 'service': 'drop-zone'})
         if path == '/api/config':
             try:
-                return self.send_json({'features': get_feature_config()})
+                return self.send_json({'features': get_feature_config(is_loopback_request(self.headers))})
             except Exception:
                 logger.exception('Feature configuration query failed')
                 return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
@@ -1212,6 +1333,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not url.startswith(('http://', 'https://')):
                         return self.send_json({'message': '测试 URL 必须以 http:// 或 https:// 开头。'}, 400)
                     switcher.test_url = url
+                feature_keys = ('global_enabled', 'steam_enabled', 'qr_enabled')
+                if any(key in data for key in feature_keys):
+                    if not all(isinstance(data.get(key), bool) for key in feature_keys):
+                        return self.send_json({'message': '提货方式开关参数无效。'}, 400)
+                    set_feature_config(
+                        data['global_enabled'], data['steam_enabled'], data['qr_enabled'],
+                    )
                 if data.get('refresh_nodes') or data.get('best_node'):
                     switcher.refresh_nodes()
                 elif data.get('switch_node') and not switcher.switch_to_next_node():
@@ -1302,7 +1430,7 @@ class Handler(BaseHTTPRequestHandler):
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
         if path == '/api/redeem':
             try:
-                if not get_feature_config()['steam']:
+                if not get_feature_config(is_loopback_request(self.headers))['steam']:
                     return self.send_json({'message': '当前未启用 Steam 提货。'}, 403)
             except Exception:
                 logger.exception('Feature configuration query failed')
@@ -1316,6 +1444,12 @@ class Handler(BaseHTTPRequestHandler):
         if code is None:
             return self.send_json({'message': '激活码格式错误。'}, 400)
         if path == '/api/redeem/global':
+            try:
+                if not get_feature_config(is_loopback_request(self.headers))['global']:
+                    return self.send_json({'message': '当前未启用全球提货。'}, 403)
+            except Exception:
+                logger.exception('Feature configuration query failed')
+                return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
             username = str(data.get('username', '')).strip()
             password = str(data.get('password', ''))
             if not username or not password:
@@ -1371,6 +1505,26 @@ class Handler(BaseHTTPRequestHandler):
             )
             try:
                 if path == '/api/redeem/global':
+                    from global_login import krafton_pure_http_login as krafton_login
+                    seed_status = krafton_login._AbckPool.status()
+                    available_seeds = (
+                        int(seed_status.get('fresh', 0))
+                        + int(seed_status.get('reusable', 0))
+                    )
+                    if available_seeds <= 0:
+                        try:
+                            steam_enabled = bool(get_feature_config()['steam'])
+                        except Exception:
+                            steam_enabled = False
+                        logger.warning(
+                            'Global redemption skipped: no available seed %s pool=%s',
+                            trace_context, seed_status,
+                        )
+                        return self.send_json({
+                            'message': '全球提货暂时不可用，请改用 Steam 提货。',
+                            'seed_unavailable': True,
+                            'fallback_to_steam': steam_enabled,
+                        }, 503)
                     login_info = get_global_login_info(username, password, inventory[1])
                 else:
                     login_info = get_steam_login_info(username, password, steam_token, inventory[1])
@@ -1379,6 +1533,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({'message': str(exc)}, 400)
                 raise
             except RuntimeError as exc:
+                if path == '/api/redeem/global' and isinstance(exc, SeedUnavailableError):
+                    try:
+                        steam_enabled = bool(get_feature_config()['steam'])
+                    except Exception:
+                        steam_enabled = False
+                    log_business_error(f'Global seed unavailable {trace_context}', exc_info=True)
+                    response = {
+                        'message': '全球提货暂时不可用，请改用 Steam 提货。',
+                        'seed_unavailable': True,
+                        'fallback_to_steam': steam_enabled,
+                    }
+                    return self.send_json(response, 503)
                 if str(exc) == 'SOOP 解绑失败，请稍后重试。':
                     log_business_error(f'SOOP unlink failed before global redemption {trace_context}', exc_info=True)
                     return self.send_json({'message': 'SOOP 解绑失败，请稍后重试。'}, 502)
@@ -1491,6 +1657,7 @@ if __name__ == '__main__':
         raise SystemExit(0)
     try:
         ensure_inventory_schema()
+        ensure_feature_config_schema()
         ensure_system_log_table()
         database_log_handler = DatabaseErrorLogHandler(level=logging.ERROR)
         logger.addHandler(database_log_handler)
@@ -1515,6 +1682,8 @@ if __name__ == '__main__':
             logger.warning('[clash] 初始化完成但没有可用节点；Steam 登录请求将继续使用本机代理入口')
     except Exception:
         logger.exception('[clash] 服务启动初始化失败')
+    # RiskByPass 余额仅由后台线程每分钟刷新一次；管理接口直接读取缓存。
+    start_riskbypass_balance_refresh()
     # Warm the shared RiskByPass seed pool when the service starts.  The
     # global getter is otherwise lazy-loaded on the first redemption request.
     try:

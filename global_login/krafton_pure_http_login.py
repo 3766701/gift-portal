@@ -101,7 +101,6 @@ BITBROWSER_PROFILE_ID = os.environ.get("BITBROWSER_PROFILE_ID") or None
 BITBROWSER_PROFILE_NAME = os.environ.get("BITBROWSER_PROFILE_NAME", "PUBG_Worker_50")
 BITBROWSER_KEEP_OPEN = os.environ.get("BITBROWSER_KEEP_OPEN", "1") == "1"
 _PERSIST_ARTIFACTS = ContextVar("krafton_persist_artifacts", default=True)
-_RISKBYPASS_SUBMIT_LOCK = threading.Lock()
 
 _POOL_LOGGER = logging.getLogger("krafton.abck_pool")
 _POOL_LOGGER.setLevel(logging.INFO)
@@ -456,27 +455,24 @@ def riskbypass_seed_cookies(
     print(f"[riskbypass] diffcult={difficult} proxy={task_proxy} akamai_js_url={akamai_js_url}")
 
     try:
-        # RiskByPass 的 /task/submit 对同一 token 的并发提交容易出现 TLS EOF；
-        # seed 前置 Cookie/JS 获取仍可并行，仅串行化第三方任务提交。
-        with _RISKBYPASS_SUBMIT_LOCK:
-            # RiskByPass API 本身直连；代理只放在 payload.proxy 供服务端访问目标。
-            proxy_env_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy")
-            old_proxy_env = {name: os.environ.get(name) for name in proxy_env_names}
-            for name in proxy_env_names:
-                if name in ("NO_PROXY", "no_proxy"):
-                    os.environ[name] = "*"
-                else:
+        # RiskByPass API 本身直连；代理只放在 payload.proxy 供服务端访问目标。
+        proxy_env_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy")
+        old_proxy_env = {name: os.environ.get(name) for name in proxy_env_names}
+        for name in proxy_env_names:
+            if name in ("NO_PROXY", "no_proxy"):
+                os.environ[name] = "*"
+            else:
+                os.environ.pop(name, None)
+        try:
+            client = RiskByPassClient(token=token, base_url="https://riskbypass.com")
+            result = client.run_task(payload, timeout=60)
+            print(f"[riskbypass] 完整返回结果: {result!r}")
+        finally:
+            for name, value in old_proxy_env.items():
+                if value is None:
                     os.environ.pop(name, None)
-            try:
-                client = RiskByPassClient(token=token, base_url="https://riskbypass.com")
-                result = client.run_task(payload, timeout=120)
-                print(f"[riskbypass] 完整返回结果: {result!r}")
-            finally:
-                for name, value in old_proxy_env.items():
-                    if value is None:
-                        os.environ.pop(name, None)
-                    else:
-                        os.environ[name] = value
+                else:
+                    os.environ[name] = value
         if isinstance(result, dict) and isinstance(result.get("cookies"), dict):
             cookies = {k: str(v) for k, v in result["cookies"].items() if str(v)}
             if not is_valid_abck(cookies.get("_abck")):
@@ -532,6 +528,7 @@ class _AbckPool:
     _fresh_target = max(1, int(os.environ.get("KRAFTON_ABCK_FRESH_TARGET", os.environ.get("PUBG_RISKBYPASS_FRESH_TARGET", "5"))))
     _min_available = max(0, int(os.environ.get("KRAFTON_ABCK_QUEUE_MIN", os.environ.get("PUBG_RISKBYPASS_QUEUE_MIN", "1"))))
     _max_uses = max(1, int(os.environ.get("KRAFTON_ABCK_MAX_USES", os.environ.get("PUBG_RISKBYPASS_SEED_MAX_USES", "100"))))
+    _seed_task_timeout_s = max(1, int(os.environ.get("KRAFTON_SEED_TASK_TIMEOUT", "60")))
     _runtime_proxies: list[str] | None = None
 
     @classmethod
@@ -559,7 +556,29 @@ class _AbckPool:
     @classmethod
     def _fill_one(cls, proxy: str | None) -> dict[str, Any]:
         effective_proxy = proxy or os.environ.get("KRAFTON_RISKBYPASS_PROXY") or os.environ.get("PUBG_RISKBYPASS_PROXY") or DEFAULT_RISKBYPASS_PROXY
-        cookies, result_ua = riskbypass_seed_cookies(proxy=effective_proxy, return_metadata=True)
+        result: dict[str, Any] = {}
+        failure: list[Exception] = []
+
+        def fetch_seed() -> None:
+            try:
+                result["cookies"], result["ua"] = riskbypass_seed_cookies(
+                    proxy=effective_proxy,
+                    return_metadata=True,
+                )
+            except Exception as exc:
+                failure.append(exc)
+
+        # ThreadPoolExecutor 无法安全终止已卡住的工作线程；使用 daemon 子线程
+        # 为单个任务设置总等待上限，超时后本轮可继续完成并进入下一轮补种。
+        task = threading.Thread(target=fetch_seed, name="krafton-seed-task", daemon=True)
+        task.start()
+        task.join(timeout=cls._seed_task_timeout_s)
+        if task.is_alive():
+            raise TimeoutError(f"RiskByPass seed 任务超时({cls._seed_task_timeout_s}s)")
+        if failure:
+            raise failure[0]
+        cookies = result.get("cookies") or {}
+        result_ua = str(result.get("ua") or "")
         if not cookies.get("_abck"):
             raise RuntimeError("RiskByPass 未返回有效 _abck")
         return {"cookies": cookies, "ua": result_ua, "abck": cookies["_abck"], "proxy": effective_proxy, "created": time.time(), "uses": 0, "in_use": False}
@@ -608,21 +627,32 @@ class _AbckPool:
     @classmethod
     def _start_refill_locked(cls, proxy: str | None) -> None:
         if cls._refill_thread and cls._refill_thread.is_alive():
+            cls._fill_cond.notify_all()
             return
         def worker() -> None:
             try:
                 while True:
-                    with cls._lock:
+                    with cls._fill_cond:
                         cls._prune_locked()
-                        fresh = sum(1 for e in cls._queue if int(e.get("uses", 0)) == 0)
-                        if fresh >= cls._fresh_target:
-                            cls._refill_thread = None
-                            return
+                        # 配置容量按“未使用 seed”计算；已复用或正在被账号占用的
+                        # seed 不占用该名额，因此每次租用后都会补一条全新 seed。
+                        fresh = sum(1 for entry in cls._queue if int(entry.get("uses", 0)) == 0)
                         need = cls._fresh_target - fresh
-                    cls._fill_batch(
-                        proxy, count=need,
-                        on_entry=lambda entry: cls._enqueue_filled_entry(entry),
+                        if need <= 0:
+                            # 常驻检查过期 seed，并在 discard/release/set_capacity 时立即唤醒。
+                            cls._fill_cond.wait(timeout=5.0)
+                            continue
+
+                    # 两条代理都要参与每轮补种。容量是全新 seed 的最低保有量，
+                    # 因此同一轮多取到的有效 seed 也必须全部入队。
+                    batch_count = max(2, need)
+                    results = cls._fill_batch(
+                        proxy, count=batch_count,
+                        on_entry=cls._enqueue_filled_entry,
                     )
+                    if not results:
+                        _pool_log("[riskbypass-pool] 本轮补种未获得有效 seed，3 秒后重试", logging.WARNING)
+                        time.sleep(3)
             except Exception as exc:
                 _pool_log(f"[riskbypass-pool] 后台补种失败: {type(exc).__name__}: {exc}", logging.ERROR)
                 with cls._lock:
@@ -667,7 +697,12 @@ class _AbckPool:
             cls._fill_cond.wait(timeout=min(1.0, remaining))
 
     @classmethod
-    def get_entry(cls, proxy: str | None = None, force_refresh: bool = False) -> dict[str, Any]:
+    def get_entry(
+        cls,
+        proxy: str | None = None,
+        force_refresh: bool = False,
+        wait_for_seed: bool = True,
+    ) -> dict[str, Any]:
         should_fill = False
         with cls._fill_cond:
             if force_refresh:
@@ -692,6 +727,9 @@ class _AbckPool:
                     out["reused"] = int(entry.get("uses", 0)) > 1
                     _pool_log(f"[riskbypass-pool] {'复用成功' if out['reused'] else '新生成'} seed abck={str(entry.get('abck', ''))[:12]}... uses={entry['uses']} queue={len(cls._queue)}")
                     return out
+            if not wait_for_seed:
+                cls._start_refill_locked(proxy)
+                raise RuntimeError("RiskByPass seed 池暂无可用 seed")
             # 登录线程只领取现有 seed；seed 生成始终由启动/后台补种线程负责。
             if not force_refresh and not cls._queue:
                 # 启动初始化正在后台串行生成时，等待其结果；等待期间不执行 API。
@@ -764,6 +802,7 @@ class _AbckPool:
         with cls._lock:
             cls._queue = deque(e for e in cls._queue if e.get("abck") != abck)
             cls._fill_cond.notify_all()
+            cls._start_refill_locked(None)
 
     @classmethod
     def release(cls, abck: str, success: bool = True, proxy: str | None = None) -> None:
@@ -781,8 +820,7 @@ class _AbckPool:
                     cls._queue.remove(entry)
                     _pool_log(f"[riskbypass-pool] 登录失败剔除 seed abck={abck[:12]}... proxy={entry.get('proxy') or proxy} abck_len={len(str(entry.get('abck', '')))} uses={entry.get('uses', 0)}", logging.WARNING)
                 cls._fill_cond.notify_all()
-                if success:
-                    cls._start_refill_locked(proxy)
+                cls._start_refill_locked(proxy)
                 return
 
     @classmethod
@@ -804,38 +842,23 @@ class _AbckPool:
     def set_capacity(cls, capacity: int) -> None:
         with cls._fill_cond:
             cls._target = max(1, min(50, int(capacity)))
+            cls._fresh_target = cls._target
             cls._fill_cond.notify_all()
+            cls._start_refill_locked(None)
 
     @classmethod
     def initialize_background(cls, proxy: str | None = None, count: int = 3) -> None:
-        """项目启动时后台初始化固定代理下的全新 seed。"""
+        """启动常驻补种线程，使有效 seed 池持续保持配置容量。"""
         with cls._fill_cond:
-            if cls._startup_started or cls._queue or cls._fill_in_progress:
+            if cls._startup_started:
                 _pool_log(
                     f"[riskbypass-pool] 启动初始化跳过 queue={len(cls._queue)} "
                     f"in_progress={cls._fill_in_progress} startup_started={cls._startup_started}"
                 )
                 return
             cls._startup_started = True
-            cls._fill_in_progress = True
-            _pool_log(f"[riskbypass-pool] 启动初始化已调度 target={count} fresh_target={cls._fresh_target}")
-
-        def worker() -> None:
-            try:
-                cls._fill_batch(
-                    proxy, count=count,
-                    on_entry=lambda entry: cls._enqueue_filled_entry(entry),
-                )
-                with cls._fill_cond:
-                    _pool_log(f"[riskbypass-pool] 启动初始化完成 fresh={sum(1 for e in cls._queue if not e.get('uses'))}/{count} queue={len(cls._queue)}")
-            except Exception as exc:
-                _pool_log(f"[riskbypass-pool] 启动初始化失败: {type(exc).__name__}: {exc}", logging.ERROR)
-            finally:
-                with cls._fill_cond:
-                    cls._fill_in_progress = False
-                    cls._fill_cond.notify_all()
-
-        threading.Thread(target=worker, name="krafton-abck-startup", daemon=True).start()
+            _pool_log(f"[riskbypass-pool] 启动常驻补种 target={cls._target} fresh_target={cls._fresh_target}")
+            cls._start_refill_locked(proxy)
 
 
 def initialize_abck_pool(proxy: str | None = None, count: int = 5) -> None:
@@ -1862,7 +1885,13 @@ def login_credentials(email: str, password: str) -> Dict[str, Any]:
             print(f"[riskbypass-login] 尝试 {attempt}/{attempts}: 获取 Akamai seed ...")
             seed_entry: dict[str, Any] = {}
             try:
-                seed_entry = _AbckPool.get_entry(proxy=rb_proxy)
+                # 每次登录重试都只能租用已就绪的 seed；不能在用户请求内等待
+                # 后台补种，避免 seed 用尽时阻塞到超时。
+                seed_status = _AbckPool.status()
+                available_seeds = int(seed_status.get("fresh", 0)) + int(seed_status.get("reusable", 0))
+                if available_seeds <= 0:
+                    raise RuntimeError("RiskByPass seed 池暂无可用 seed")
+                seed_entry = _AbckPool.get_entry(proxy=rb_proxy, wait_for_seed=False)
                 seed = seed_entry.get("cookies") or {}
                 login_proxy = None
                 seed_ua = str(seed_entry.get("ua") or "").strip()

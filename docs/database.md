@@ -81,25 +81,27 @@ CREATE TABLE IF NOT EXISTS activation_claims (
 
 ## Feature configuration
 
-Feature availability is controlled in the same database. The service first looks up the current machine hostname, then falls back to the `default` row. Keep `default` disabled for production and create a development-machine override to enable the two local-only methods.
+Feature availability is controlled in the same database. The service first looks up the current machine hostname, then falls back to the `default` row. Direct `localhost` access always enables all three methods for local testing; external server access follows these database values.
 
 ```sql
 CREATE TABLE IF NOT EXISTS portal_feature_config (
     scope VARCHAR(128) NOT NULL PRIMARY KEY,
+    global_enabled TINYINT(1) NOT NULL DEFAULT 1,
     steam_enabled TINYINT(1) NOT NULL DEFAULT 0,
     qr_enabled TINYINT(1) NOT NULL DEFAULT 0,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Production fallback: only the global redemption method is enabled.
-INSERT INTO portal_feature_config (scope, steam_enabled, qr_enabled)
-VALUES ('default', 0, 0)
+INSERT INTO portal_feature_config (scope, global_enabled, steam_enabled, qr_enabled)
+VALUES ('default', 1, 0, 0)
 ON DUPLICATE KEY UPDATE scope = VALUES(scope);
 
 -- Development-machine override. Replace with the actual local hostname.
-INSERT INTO portal_feature_config (scope, steam_enabled, qr_enabled)
-VALUES ('YOUR-DEVELOPMENT-HOSTNAME', 1, 1)
+INSERT INTO portal_feature_config (scope, global_enabled, steam_enabled, qr_enabled)
+VALUES ('YOUR-DEVELOPMENT-HOSTNAME', 1, 1, 1)
 ON DUPLICATE KEY UPDATE
+    global_enabled = VALUES(global_enabled),
     steam_enabled = VALUES(steam_enabled),
     qr_enabled = VALUES(qr_enabled);
 ```
