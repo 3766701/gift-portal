@@ -15,6 +15,8 @@ python server.py
 
 Steam 提货的 KID 登录固定使用本机 Mihomo/Clash HTTP 代理 `http://127.0.0.1:7890`，不读取代理环境变量，也不使用 QG 代理。请先启动本机 Mihomo 并监听该端口。
 
+服务器上的 Mihomo 可通过 `external-controller: 127.0.0.1:9090` 提供节点控制 API；`secret: ''` 表示空密钥，项目会直接访问该 API。启动时项目会读取 `/root/.config/mihomo/config.yaml`（也支持 `$XDG_CONFIG_HOME/mihomo/config.yaml`），获取代理组节点并测速，随后通过 `PUT /proxies/<代理组>` 切换节点。遇到网络错误、403、429 或 Steam 限流时会切换节点并重试，最多 3 次。项目和 Mihomo 必须运行在同一台服务器上，因为 `127.0.0.1` 只指向本机。
+
 全球提货和 Steam 提货会在服务端验证账号密码。账号、密码、Steam令牌和授权令牌不会保存到订单数据或返回给浏览器。Steam 账户需要关联已有 KRAFTON/KID 账号；需要二次验证时页面会要求输入 Steam手机令牌或备用码。
 
 全球账号登录实现已包含在 `global_login/` 目录，部署时无需额外复制 `pubg_cookie_getter_http.py`。默认使用 Playwright 生成 KRAFTON 登录所需的浏览器遥测，因此需要执行 `python -m playwright install chromium`。
