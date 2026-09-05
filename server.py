@@ -1409,7 +1409,7 @@ class Handler(BaseHTTPRequestHandler):
     def read_json(self):
         try:
             content_length = int(self.headers.get('Content-Length', '0'))
-            if content_length <= 0 or content_length > 64 * 1024:
+            if content_length <= 0 or content_length > 5 * 1024 * 1024:
                 raise ValueError
             data = json.loads(self.rfile.read(content_length))
         except (ValueError, json.JSONDecodeError):
