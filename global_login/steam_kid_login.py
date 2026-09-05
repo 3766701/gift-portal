@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import io
 import base64
 import calendar
@@ -63,7 +64,7 @@ STEAM_COMMUNITY = "https://steamcommunity.com"
 STEAM_LOGIN = "https://login.steampowered.com"
 KRAFTON_BASE = "https://accounts.krafton.com"
 MAILBOX_API = "https://mail.xiongmaodianjing.top/api/fetch"
-PORTAL_STEAM_LOGIN_LOCK = threading.Lock()
+PORTAL_NO_PERSIST = contextvars.ContextVar('portal_no_persist', default=False)
 
 
 STEAM_ERESULT_MAP = {
@@ -168,6 +169,8 @@ def settoken_result_message(body: Any) -> str:
 
 
 def save_json(path: Path, data: Any) -> None:
+    if PORTAL_NO_PERSIST.get():
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -208,7 +211,7 @@ def read_saved_steam_refresh_token() -> str:
 
 
 def save_steam_refresh_token(token: str) -> None:
-    if token:
+    if token and not PORTAL_NO_PERSIST.get():
         STEAM_REFRESH_FILE.parent.mkdir(parents=True, exist_ok=True)
         STEAM_REFRESH_FILE.write_text(token.strip(), encoding="utf-8")
 
@@ -1661,50 +1664,34 @@ def login_steam_to_kid_session(
     if guard and classify_steam_token(guard) == "unknown":
         raise ValueError("Steam令牌应为 5 位手机令牌或 7 位备用码")
 
-    # The command-line helper saves verbose HTTP artifacts. Portal requests
-    # must keep credentials and sessions in memory only.
-    global save_json, save_steam_refresh_token
-    # save_json and stdout are module/process globals in the legacy flow.
-    # Serializing this adapter prevents cross-request data leakage.
-    with PORTAL_STEAM_LOGIN_LOCK:
-        original_save_json, original_save_refresh = save_json, save_steam_refresh_token
-        save_json = lambda _path, _data: None
-        save_steam_refresh_token = lambda _token: None
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                # Steam login does not need KID/Akamai bootstrap telemetry.
-                # Keep the session HTTP-only; domain routing still sends only
-                # Steam hosts through Mihomo.
-                session = make_session(proxy)
-                oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
-                steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
-                login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)
-                auth = begin_auth(session, steam_user, steam_password, login_page.url)
-                allowed = auth.get("allowed_confirmations") or []
-                if not guard and allowed:
-                    raise SteamGuardRequired("Steam token verification is required")
-                if guard:
-                    update_guard(session, auth, guard)
-                polled = poll_auth(session, auth)
-                steam_finalize_login(session, polled, steam_oauth_url)
-                follow_with_post_login_steps(session, steam_oauth_url, oidc["state"], "", "")
-                return session, {"steamid": str(auth.get("steamid") or auth.get("steam_id") or "")}
-        finally:
-            save_json, save_steam_refresh_token = original_save_json, original_save_refresh
+    # Portal requests keep credentials and sessions in memory only. The
+    # ContextVar is isolated per request, so concurrent users do not block.
+    with portal_steam_request():
+        with contextlib.redirect_stdout(io.StringIO()):
+            session = make_session(proxy)
+            oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
+            steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
+            login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)
+            auth = begin_auth(session, steam_user, steam_password, login_page.url)
+            allowed = auth.get("allowed_confirmations") or []
+            if not guard and allowed:
+                raise SteamGuardRequired("Steam token verification is required")
+            if guard:
+                update_guard(session, auth, guard)
+            polled = poll_auth(session, auth)
+            steam_finalize_login(session, polled, steam_oauth_url)
+            follow_with_post_login_steps(session, steam_oauth_url, oidc["state"], "", "")
+            return session, {"steamid": str(auth.get("steamid") or auth.get("steam_id") or "")}
 
 
 @contextlib.contextmanager
 def portal_steam_request():
     """门户二维码会话不落盘 HTTP 工件或认证令牌。"""
-    global save_json, save_steam_refresh_token
-    with PORTAL_STEAM_LOGIN_LOCK:
-        original_save_json, original_save_refresh = save_json, save_steam_refresh_token
-        save_json = lambda _path, _data: None
-        save_steam_refresh_token = lambda _token: None
-        try:
-            yield
-        finally:
-            save_json, save_steam_refresh_token = original_save_json, original_save_refresh
+    token = PORTAL_NO_PERSIST.set(True)
+    try:
+        yield
+    finally:
+        PORTAL_NO_PERSIST.reset(token)
 
 
 def begin_steam_qr_login(proxy: str | None = None) -> tuple[requests.Session, dict[str, Any]]:
@@ -1756,8 +1743,8 @@ def begin_steam_qr_login(proxy: str | None = None) -> tuple[requests.Session, di
         return session, {"auth": response, "oidc": oidc, "oauth_url": steam_oauth_url, "login_url": login_page.url}
 
 
-def poll_steam_qr_login(session: requests.Session, state: dict[str, Any]) -> dict[str, Any] | None:
-    """轮询一次扫码会话；尚未确认时返回 None，确认后完成 Steam/KRAFTON 登录。"""
+def poll_steam_qr_login(session: requests.Session, state: dict[str, Any], complete_login: bool = True) -> dict[str, Any] | None:
+    """轮询一次扫码会话；确认后可选择在当前请求或后台完成 KID 登录。"""
     auth = state["auth"]
     with portal_steam_request():
         body = post_steam_api(
@@ -1785,18 +1772,27 @@ def poll_steam_qr_login(session: requests.Session, state: dict[str, Any]) -> dic
             raise RuntimeError(f"Steam QR login rejected: {error_message}")
         if not (response.get("refresh_token") or response.get("access_token")):
             return None
-        finalized = steam_finalize_login(session, response, state["oauth_url"])
+        if not complete_login:
+            return {"poll_response": response}
+        return complete_steam_qr_login(session, state, response)
+
+
+def complete_steam_qr_login(session: requests.Session, state: dict[str, Any], poll_response: dict[str, Any]) -> dict[str, Any]:
+    """完成 Steam 登录态转移和 KRAFTON OAuth。"""
+    auth = state["auth"]
+    with portal_steam_request():
+        finalized = steam_finalize_login(session, poll_response, state["oauth_url"])
         follow_with_post_login_steps(session, state["oauth_url"], state["oidc"]["state"], "", "")
-        steamid = (
-            finalized.get("steamID")
-            or finalized.get("steamid")
-            or response.get("steamid")
-            or response.get("steam_id")
-            or auth.get("steamid")
-            or auth.get("steam_id")
-            or ""
-        )
-        return {"steamid": str(steamid)}
+    steamid = (
+        finalized.get("steamID")
+        or finalized.get("steamid")
+        or poll_response.get("steamid")
+        or poll_response.get("steam_id")
+        or auth.get("steamid")
+        or auth.get("steam_id")
+        or ""
+    )
+    return {"steamid": str(steamid)}
 
 
 def main() -> int:

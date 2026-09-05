@@ -17,6 +17,8 @@ logging.basicConfig(
 class VPNSwitcher:
     """VPN切换器类，用于自动切换VPN节点以避免请求频率限制"""
     DEFAULT_PROXY_GROUP = "🔰国外流量"
+    DEFAULT_NODE_NAME_KEYWORDS = "台湾|香港|TW|HK"
+    DEFAULT_NODE_NAME_FILTER_ENABLED = False
     
     def __init__(self, proxy_group: Optional[str] = None):
         self.vpn_switch_lock = threading.Lock()  # VPN切换锁
@@ -37,6 +39,8 @@ class VPNSwitcher:
         
         # VPN相关配置（硬编码）（硬编码）
         self.proxy_group = self._normalize_proxy_group(proxy_group)  # 可由GUI输入覆盖
+        self.node_name_keywords = self.DEFAULT_NODE_NAME_KEYWORDS
+        self.node_name_filter_enabled = self.DEFAULT_NODE_NAME_FILTER_ENABLED
         # Use the Steam auth endpoint as the latency target. Mihomo's delay
         # probe only tests reachability/latency and does not submit credentials.
         self.test_url = "https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"
@@ -79,6 +83,11 @@ class VPNSwitcher:
 
         normalized = str(proxy_group).strip()
         return normalized or cls.DEFAULT_PROXY_GROUP
+
+    @staticmethod
+    def _parse_node_name_keywords(value: Optional[str]) -> List[str]:
+        """按竖线分隔节点名关键词；空值代表不过滤。"""
+        return [keyword.strip() for keyword in str(value or '').split('|') if keyword.strip()]
     
 
     
@@ -270,6 +279,7 @@ class VPNSwitcher:
             supported_nodes = []
             node_stats = {}
             region_stats = {}
+            name_keywords = self._parse_node_name_keywords(self.node_name_keywords) if self.node_name_filter_enabled else []
             
             # 收集所有协议的节点（排除DIRECT、REJECT等特殊节点）
             excluded_types = ["direct", "reject", "selector", "urltest", "fallback", "loadbalance"]
@@ -280,7 +290,9 @@ class VPNSwitcher:
                     node_type = node_info.get("type", "").lower()
                     
                     # 排除特殊类型的节点，只保留真正的代理节点
-                    if node_type not in excluded_types and node_type:
+                    if node_type not in excluded_types and node_type and (
+                        not name_keywords or any(keyword.casefold() in node.casefold() for keyword in name_keywords)
+                    ):
                         supported_nodes.append(node)
                         
                         # 统计各协议类型数量
@@ -320,7 +332,8 @@ class VPNSwitcher:
             # 输出详细的节点统计信息
             protocol_info = ", ".join([f"{protocol}: {count}" for protocol, count in node_stats.items()])
             region_info = ", ".join([f"{region}: {count}" for region, count in region_stats.items()])
-            logging.info(f"从 {len(all_nodes)} 个线路中筛选出 {len(supported_nodes)} 个节点（所有协议）")
+            keyword_summary = '|'.join(name_keywords) if self.node_name_filter_enabled and name_keywords else '未启用（全部节点）'
+            logging.info(f"从 {len(all_nodes)} 个线路中筛选出 {len(supported_nodes)} 个节点（关键词：{keyword_summary}）")
             logging.info(f"协议分布: {protocol_info}")
             logging.info(f"地区分布: {region_info}")
             
@@ -612,6 +625,36 @@ class VPNSwitcher:
     def get_proxy_group(self) -> str:
         """获取当前代理组名称"""
         return self.proxy_group
+
+    def get_node_name_keywords(self) -> str:
+        """获取当前节点名称关键词过滤配置。"""
+        return self.node_name_keywords
+
+    def is_node_name_filter_enabled(self) -> bool:
+        """获取节点名称关键词过滤是否启用。"""
+        return self.node_name_filter_enabled
+
+    def set_node_name_filter_enabled(self, enabled: bool) -> bool:
+        """更新节点名称关键词过滤开关；返回值表示配置是否发生变化。"""
+        if not isinstance(enabled, bool):
+            raise ValueError('节点名称关键词过滤开关无效。')
+        with self.vpn_switch_lock:
+            if enabled == self.node_name_filter_enabled:
+                return False
+            self.node_name_filter_enabled = enabled
+        logging.info('Clash 节点名称关键词过滤已%s', '启用' if enabled else '关闭')
+        return True
+
+    def set_node_name_keywords(self, value: Optional[str]) -> bool:
+        """更新节点名称过滤；返回值表示配置是否发生变化。"""
+        normalized = '|'.join(self._parse_node_name_keywords(value))
+        with self.vpn_switch_lock:
+            if normalized == self.node_name_keywords:
+                return False
+            old_value = self.node_name_keywords
+            self.node_name_keywords = normalized
+        logging.info('Clash 节点名称关键词已更新: %s -> %s', old_value or '未设置', normalized or '未设置')
+        return True
 
     def set_proxy_group(self, proxy_group: Optional[str]) -> bool:
         """更新代理组并重新初始化可用线路"""

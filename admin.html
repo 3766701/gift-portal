@@ -131,9 +131,10 @@
                   </div>
                 </section>
                 <section class="settings-section">
-                  <div class="settings-section-title"><h3>Clash 线路</h3><p>用于 Steam 登录的代理组和节点测速地址。</p></div>
+                  <div class="settings-section-title"><h3>Clash 线路</h3><p>用于 Steam 登录的代理组、节点名称过滤和测速地址。</p></div>
                   <div class="settings-fields">
                     <label>代理组<input id="clash-proxy-group" class="layui-input" type="text" placeholder="🔰国外流量"></label>
+                    <label class="clash-keyword-field"><span class="clash-keyword-field-header"><span>节点名称关键词</span><span class="clash-keyword-toggle"><input id="clash-node-name-filter-enabled" type="checkbox"><span class="toggle-control"></span><span>启用关键词筛选</span></span></span><input id="clash-node-keywords" class="layui-input" type="text" value="台湾|香港|TW|HK" placeholder="例如：台湾|香港|TW|HK"></label>
                     <label class="wide-field">测速 URL<input id="clash-test-url" class="layui-input" type="url" placeholder="https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"></label>
                   </div>
                 </section>

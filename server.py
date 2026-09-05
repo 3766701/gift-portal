@@ -705,6 +705,55 @@ def create_soop_inventory(created_by, account_name, cookie, product_name):
         connection.close()
 
 
+def set_soop_inventory_enabled(inventory_id, enabled):
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'UPDATE soop_inventory SET enabled = %s WHERE id = %s',
+                (int(enabled), inventory_id),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError('库存商品不存在。')
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def delete_soop_inventory(inventory_id):
+    """Delete inventory and its unused activation code as one transaction."""
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT si.id, ac.id, ac.claim_status '
+                'FROM soop_inventory si '
+                'LEFT JOIN activation_code_inventory aci ON aci.soop_inventory_id = si.id '
+                'LEFT JOIN activation_codes ac ON ac.id = aci.activation_code_id '
+                'WHERE si.id = %s FOR UPDATE',
+                (inventory_id,),
+            )
+            inventory = cursor.fetchone()
+            if inventory is None:
+                raise LookupError('库存商品不存在。')
+            activation_code_id = inventory[1]
+            if activation_code_id is not None and inventory[2] != 'available':
+                raise ValueError('已领取或领取中的库存不能删除。')
+            if activation_code_id is not None:
+                cursor.execute('DELETE FROM activation_code_inventory WHERE soop_inventory_id = %s', (inventory_id,))
+                cursor.execute('DELETE FROM activation_codes WHERE id = %s', (activation_code_id,))
+            cursor.execute('DELETE FROM soop_inventory WHERE id = %s', (inventory_id,))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def create_activation_code_for_inventory(inventory_id):
     """Generate one code and bind it to one previously unassigned inventory row."""
     connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
@@ -928,6 +977,12 @@ def finish_steam_qr_login(qr_session):
 def process_steam_qr_claim(qr_session, steam_info):
     """在扫码确认后异步完成 KID/SOOP 领取，避免阻塞二维码状态响应。"""
     try:
+        from global_login import steam_kid_login
+        steam_info = steam_kid_login.complete_steam_qr_login(
+            qr_session['session'], qr_session['steam_state'], steam_info['poll_response'],
+        )
+        with qr_session['lock']:
+            qr_session['claim_status'] = 'claiming'
         claim_cookie = finish_steam_qr_login(qr_session)
         claim_token = secrets.token_hex(16)
         if not reserve_global_code(qr_session['code'], claim_token):
@@ -1325,6 +1380,8 @@ class Handler(BaseHTTPRequestHandler):
                         'group': switcher.get_proxy_group(),
                         'node': switcher.get_current_node(),
                         'available_nodes': switcher.get_available_nodes_count(),
+                        'node_name_keywords': switcher.get_node_name_keywords(),
+                        'node_name_filter_enabled': switcher.is_node_name_filter_enabled(),
                         'test_url': switcher.test_url,
                     },
                 })
@@ -1404,11 +1461,13 @@ class Handler(BaseHTTPRequestHandler):
                         'message': qr_session.get('terminal_message', '提交成功，请重启大厅。'),
                     })
                 if qr_session.get('claim_status') == 'processing':
-                    return self.send_json({'status': 'processing', 'message': '正在提货，请稍候…'}, 202)
+                    return self.send_json({'status': 'processing', 'message': '正在登录 KID，请稍候…'}, 202)
+                if qr_session.get('claim_status') == 'claiming':
+                    return self.send_json({'status': 'claiming', 'message': '正在提货，请稍候…'}, 202)
                 try:
                     from global_login import steam_kid_login
                     steam_info = steam_kid_login.poll_steam_qr_login(
-                        qr_session['session'], qr_session['steam_state'],
+                        qr_session['session'], qr_session['steam_state'], complete_login=False,
                     )
                     if steam_info is None:
                         return self.send_json({'status': 'pending', 'message': '等待 Steam 手机端扫码确认…'})
@@ -1418,7 +1477,7 @@ class Handler(BaseHTTPRequestHandler):
                         args=(qr_session, steam_info),
                         name='steam-qr-claim', daemon=True,
                     ).start()
-                    return self.send_json({'status': 'confirmed', 'message': 'Steam 扫码成功，正在提货…'}, 202)
+                    return self.send_json({'status': 'confirmed', 'message': 'Steam 扫码成功，正在登录…'}, 202)
                 except Exception as exc:
                     logger.exception('Steam QR login failed')
                     message = qr_login_failure_message(exc)
@@ -1481,6 +1540,14 @@ class Handler(BaseHTTPRequestHandler):
                     group = str(data.get('proxy_group')).strip()
                     if not group or not switcher.set_proxy_group(group):
                         return self.send_json({'message': '代理组不存在或初始化失败。'}, 400)
+                keywords_changed = False
+                if data.get('node_name_keywords') is not None:
+                    keywords_changed = switcher.set_node_name_keywords(data.get('node_name_keywords'))
+                filter_changed = False
+                if 'node_name_filter_enabled' in data:
+                    if not isinstance(data['node_name_filter_enabled'], bool):
+                        return self.send_json({'message': '节点名称关键词过滤开关参数无效。'}, 400)
+                    filter_changed = switcher.set_node_name_filter_enabled(data['node_name_filter_enabled'])
                 if data.get('test_url') is not None:
                     url = str(data.get('test_url')).strip()
                     if not url.startswith(('http://', 'https://')):
@@ -1493,11 +1560,13 @@ class Handler(BaseHTTPRequestHandler):
                     set_feature_config(
                         data['global_enabled'], data['steam_enabled'], data['qr_enabled'],
                     )
-                if data.get('refresh_nodes') or data.get('best_node'):
+                nodes_refreshed = False
+                if data.get('refresh_nodes') or data.get('best_node') or keywords_changed or filter_changed:
                     switcher.refresh_nodes()
+                    nodes_refreshed = True
                 elif data.get('switch_node') and not switcher.switch_to_next_node():
                     return self.send_json({'message': '没有可切换的 Clash 节点。'}, 503)
-                return self.send_json({'message': '运行配置已更新。'})
+                return self.send_json({'message': '运行配置已更新。', 'nodes_refreshed': nodes_refreshed})
             except (TypeError, ValueError):
                 return self.send_json({'message': 'Seed 池容量必须是 1 到 50 的整数。'}, 400)
             except Exception:
@@ -1547,6 +1616,41 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception('Admin inventory creation failed')
                 return self.send_json({'message': '库存录入失败。'}, 503)
+        if path == '/api/admin/inventory/status':
+            if not self.require_admin(): return
+            data = self.read_json()
+            try:
+                inventory_id = int((data or {}).get('inventory_id'))
+                enabled = (data or {}).get('enabled')
+                if inventory_id <= 0 or not isinstance(enabled, bool): raise ValueError
+            except (TypeError, ValueError):
+                return self.send_json({'message': '库存 ID 或状态无效。'}, 400)
+            try:
+                set_soop_inventory_enabled(inventory_id, enabled)
+                return self.send_json({'message': '库存状态已更新。', 'enabled': enabled})
+            except LookupError as exc:
+                return self.send_json({'message': str(exc)}, 404)
+            except Exception:
+                logger.exception('Admin inventory status update failed')
+                return self.send_json({'message': '库存状态更新失败。'}, 503)
+        if path == '/api/admin/inventory/delete':
+            if not self.require_admin(): return
+            data = self.read_json()
+            try:
+                inventory_id = int((data or {}).get('inventory_id'))
+                if inventory_id <= 0: raise ValueError
+            except (TypeError, ValueError):
+                return self.send_json({'message': '库存 ID 无效。'}, 400)
+            try:
+                delete_soop_inventory(inventory_id)
+                return self.send_json({'message': '库存已删除。'})
+            except LookupError as exc:
+                return self.send_json({'message': str(exc)}, 404)
+            except ValueError as exc:
+                return self.send_json({'message': str(exc)}, 409)
+            except Exception:
+                logger.exception('Admin inventory deletion failed')
+                return self.send_json({'message': '库存删除失败。'}, 503)
         if path == '/api/admin/inventory/import':
             if not self.require_admin(): return
             data = self.read_json()
@@ -1607,7 +1711,7 @@ class Handler(BaseHTTPRequestHandler):
                 qr_session = {
                     'code': code, 'inventory': inventory, 'session': session,
                     'steam_state': steam_state, 'expires_at': time.time() + STEAM_QR_TTL_SECONDS,
-                    'lock': threading.Lock(),
+                    'lock': threading.Lock(), 'login_status': 'pending',
                 }
                 cleanup_steam_qr_sessions()
                 with STEAM_QR_SESSIONS_LOCK:
