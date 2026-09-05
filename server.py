@@ -1066,6 +1066,13 @@ class Handler(BaseHTTPRequestHandler):
                 from global_login import krafton_pure_http_login as krafton_login
                 from global_login.vpn_switcher import get_vpn_switcher
                 seed_status = krafton_login._AbckPool.status()
+                balance = None
+                balance_error = None
+                try:
+                    from riskbypass import RiskByPassClient
+                    balance = RiskByPassClient(token=krafton_login.load_riskbypass_token()).check_balance()
+                except Exception as exc:
+                    balance_error = type(exc).__name__
                 switcher = get_vpn_switcher()
                 return self.send_json({
                     'seed': {
@@ -1073,6 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
                         'fresh': seed_status.get('fresh', 0),
                         'in_use': seed_status.get('in_use', 0),
                         'target': seed_status.get('target', 0),
+                        'proxies': krafton_login._AbckPool.runtime_proxies(),
+                        'balance': balance,
+                        'balance_error': balance_error,
                     },
                     'clash': {
                         'available': bool(switcher.is_vpn_available()),
@@ -1081,11 +1091,40 @@ class Handler(BaseHTTPRequestHandler):
                         'available_nodes': switcher.get_available_nodes_count(),
                         'proxy': switcher.proxies.get('http'),
                         'controller': switcher.clash_api,
+                        'test_url': switcher.test_url,
                     },
                 })
             except Exception:
                 logger.exception('Admin runtime status query failed')
                 return self.send_json({'message': '运行状态查询失败。'}, 503)
+        if path == '/api/admin/runtime-settings':
+            if not self.require_admin(): return
+            data = self.read_json()
+            if not isinstance(data, dict): return self.send_json({'message': '请求参数无效。'}, 400)
+            try:
+                from global_login import krafton_pure_http_login as krafton_login
+                from global_login.vpn_switcher import get_vpn_switcher
+                proxies = data.get('seed_proxies')
+                if proxies is not None:
+                    if not isinstance(proxies, list) or len(proxies) > 2 or any(not str(p).strip() for p in proxies):
+                        return self.send_json({'message': 'seed 代理最多填写两条有效地址。'}, 400)
+                    krafton_login._AbckPool.set_runtime_proxies([str(p).strip() for p in proxies])
+                switcher = get_vpn_switcher()
+                if data.get('proxy_group') is not None:
+                    group = str(data.get('proxy_group')).strip()
+                    if not group or not switcher.set_proxy_group(group):
+                        return self.send_json({'message': '代理组不存在或初始化失败。'}, 400)
+                if data.get('test_url') is not None:
+                    url = str(data.get('test_url')).strip()
+                    if not url.startswith(('http://', 'https://')):
+                        return self.send_json({'message': '测试 URL 必须以 http:// 或 https:// 开头。'}, 400)
+                    switcher.test_url = url
+                if data.get('refresh_nodes'):
+                    switcher.refresh_nodes()
+                return self.send_json({'message': '运行配置已更新。'})
+            except Exception:
+                logger.exception('Admin runtime settings update failed')
+                return self.send_json({'message': '运行配置更新失败。'}, 503)
         if path == '/api/admin/inventory':
             if not self.require_admin(): return
             try:

@@ -349,6 +349,12 @@ class VPNSwitcher:
         except Exception as e:
             logging.debug(f"测试线路 {node} 延迟失败: {str(e)}")
             return 9999
+
+    def refresh_nodes(self) -> None:
+        """Re-fetch, measure, sort, and select the best available nodes."""
+        self.available_nodes = []
+        self.current_node_index = 0
+        self._init_available_nodes()
     
     def _node_usage_key(self, node: str) -> str:
         return f"{self.proxy_group}|{node}"

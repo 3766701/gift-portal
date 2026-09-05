@@ -532,6 +532,20 @@ class _AbckPool:
     _fresh_target = max(1, int(os.environ.get("KRAFTON_ABCK_FRESH_TARGET", os.environ.get("PUBG_RISKBYPASS_FRESH_TARGET", "5"))))
     _min_available = max(0, int(os.environ.get("KRAFTON_ABCK_QUEUE_MIN", os.environ.get("PUBG_RISKBYPASS_QUEUE_MIN", "1"))))
     _max_uses = max(1, int(os.environ.get("KRAFTON_ABCK_MAX_USES", os.environ.get("PUBG_RISKBYPASS_SEED_MAX_USES", "100"))))
+    _runtime_proxies: list[str] | None = None
+
+    @classmethod
+    def set_runtime_proxies(cls, proxies: list[str]) -> None:
+        with cls._lock:
+            cls._runtime_proxies = [str(p).strip() for p in proxies if str(p).strip()][:2] or None
+
+    @classmethod
+    def runtime_proxies(cls) -> list[str]:
+        with cls._lock:
+            if cls._runtime_proxies is not None:
+                return list(cls._runtime_proxies)
+        configured = os.environ.get("KRAFTON_RISKBYPASS_PROXIES") or os.environ.get("PUBG_RISKBYPASS_PROXIES")
+        return [p.strip() for p in configured.split(",") if p.strip()] if configured else list(DEFAULT_RISKBYPASS_PROXIES)
 
     @classmethod
     def _prune_locked(cls) -> None:
@@ -558,7 +572,7 @@ class _AbckPool:
         errors: list[str] = []
         _pool_log(f"[riskbypass-pool] 动态代理 5 线程并发初始化 {count} 个 seed ...")
         configured = os.environ.get("KRAFTON_RISKBYPASS_PROXIES") or os.environ.get("PUBG_RISKBYPASS_PROXIES")
-        proxy_list = [p.strip() for p in configured.split(",") if p.strip()] if configured else list(DEFAULT_RISKBYPASS_PROXIES)
+        proxy_list = cls.runtime_proxies()
         if proxy:
             proxy_list = [proxy, *[p for p in proxy_list if p != proxy]]
         proxies = [proxy_list[i % len(proxy_list)] for i in range(count)]
