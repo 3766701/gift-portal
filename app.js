@@ -15,6 +15,9 @@ const setRedemptionLoading=(active,message='正在提货...')=>{$('#global-loadi
 const isEmail=value=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const closeResultModal=()=>{$('#result-modal').hidden=true;};
 const showResultModal=message=>{$('#result-modal-message').textContent=message;$('#result-modal').hidden=false;$('#result-modal-confirm').focus();};
+const closeSteamQrModal=()=>{$('#steam-qr-modal').hidden=true;};
+const showSteamQrModal=(svg,message='请使用 Steam 手机客户端扫码并确认。')=>{const box=$('#steam-qr-modal-box');box.replaceChildren();const image=document.createElement('img');image.alt='Steam 扫码登录二维码';image.src=`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;box.append(image);$('#steam-qr-modal-message').textContent=message;$('#steam-qr-modal').hidden=false;};
+const setSteamQrMessage=message=>{$('#steam-qr-modal-message').textContent=message;};
 const responseMessage=async response=>{
   try{const data=await response.json();if(data.message)return data.message;}catch(error){}
   if(response.status===504)return '服务器处理超时，请稍后使用激活码查询提货状态。';
@@ -34,4 +37,24 @@ $('#steam-guard-form').addEventListener('submit',async e=>{e.preventDefault();co
 $('#steam-guard-close').addEventListener('click',closeSteamGuard);
 $('#check-order-short').addEventListener('click',()=>{queryActivationCode($('#code').value.trim())});
 $('#query-order').addEventListener('click',()=>{queryActivationCode($('#order-id').value.trim(),{showHistory:true})});
-$('#generate-qr').addEventListener('click',()=>{if(!$('#qr-code').value.trim()){$('#qr-result').textContent='请输入激活码。';return}$('#qr-box').style.display='block';$('#qr-result').textContent='二维码已生成，请使用对应客户端扫码。'});
+let steamQrId=null,steamQrTimer=null,steamQrInFlight=false,steamQrCloseTimer=null;
+const stopSteamQrPolling=()=>{if(steamQrTimer){clearInterval(steamQrTimer);steamQrTimer=null;}};
+const clearSteamQrCloseTimer=()=>{if(steamQrCloseTimer){clearTimeout(steamQrCloseTimer);steamQrCloseTimer=null;}};
+const failClosedSteamQr=()=>{if(!steamQrId)return;stopSteamQrPolling();steamQrId=null;setRedemptionLoading(false);showResultModal('二维码关闭后 30 秒内未完成 Steam 登录。');};
+const closeSteamQrWithGrace=()=>{closeSteamQrModal();if(!steamQrId)return;clearSteamQrCloseTimer();setSteamQrMessage('二维码已关闭，30 秒内完成扫码可继续提货。');steamQrCloseTimer=setTimeout(failClosedSteamQr,30000);};
+const refreshSteamQrAfterRejection=async(code)=>{
+  stopSteamQrPolling();clearSteamQrCloseTimer();steamQrId=null;
+  try{
+    const r=await fetch(api('/api/qr/create'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok){closeSteamQrModal();showResultModal(data.message||'二维码刷新失败，请重新提交。');return;}
+    steamQrId=data.qr_id;
+    showSteamQrModal(data.qr_svg,'Steam 手机端已拒绝上一次登录，二维码已刷新，请重新扫码确认。');
+    steamQrTimer=setInterval(querySteamQr,2500);
+    querySteamQr();
+  }catch{closeSteamQrModal();showResultModal('二维码刷新失败，请重新提交。');}
+};
+const querySteamQr=async()=>{if(!steamQrId){queryActivationCode($('#qr-code').value.trim());return}if(steamQrInFlight)return;steamQrInFlight=true;try{const r=await fetch(api(`/api/qr/${encodeURIComponent(steamQrId)}/status`)),data=await r.json();if(r.status===410){stopSteamQrPolling();steamQrId=null;clearSteamQrCloseTimer();closeSteamQrModal();showResultModal(data.message||'二维码已过期，请重新生成。');return}if(!r.ok&&r.status!==202){if(r.status===409&&/拒绝登录|阻止了本次登录/.test(data.message||'')){await refreshSteamQrAfterRejection($('#qr-code').value.trim());return}if(![429,502,503,504].includes(r.status)){stopSteamQrPolling();steamQrId=null;clearSteamQrCloseTimer();closeSteamQrModal();showResultModal(data.message||'扫码状态查询失败。');return}setSteamQrMessage(data.message||'扫码状态查询失败，正在重试…');return}setSteamQrMessage(data.message||'等待 Steam 手机端扫码确认…');if(data.status==='confirmed'||data.status==='processing'){clearSteamQrCloseTimer();closeSteamQrModal();setRedemptionLoading(true,'正在提货...');}else if(data.status==='completed'){stopSteamQrPolling();steamQrId=null;clearSteamQrCloseTimer();setRedemptionLoading(false);closeSteamQrModal();showResultModal(data.message||'提交成功，请重启大厅。');}else if(data.status==='submitted'||data.status==='conflict'||data.status==='failed'){stopSteamQrPolling();steamQrId=null;clearSteamQrCloseTimer();setRedemptionLoading(false);closeSteamQrModal();showResultModal(data.message||'领取状态已结束。');}}catch{setSteamQrMessage('扫码状态查询失败，正在重试…');}finally{steamQrInFlight=false;}};
+$('#generate-qr').addEventListener('click',async()=>{const code=$('#qr-code').value.trim(),button=$('#generate-qr');if(!code){showResultModal('请输入激活码。');return}stopSteamQrPolling();clearSteamQrCloseTimer();steamQrId=null;closeSteamQrModal();button.disabled=true;setRedemptionLoading(true,'正在提货...');try{const r=await fetch(api('/api/qr/create'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})}),data=await r.json();if(!r.ok){showResultModal(data.message||'二维码创建失败。');return}steamQrId=data.qr_id;showSteamQrModal(data.qr_svg);steamQrTimer=setInterval(querySteamQr,2500);querySteamQr();}catch{showResultModal('无法连接提货服务，请稍后重试。');}finally{button.disabled=false;setRedemptionLoading(false);}});
+$('#query-qr').addEventListener('click',querySteamQr);
+$('#steam-qr-close').addEventListener('click',closeSteamQrWithGrace);$('#steam-qr-modal-confirm').addEventListener('click',closeSteamQrWithGrace);$('#steam-qr-modal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSteamQrWithGrace();});

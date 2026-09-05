@@ -72,6 +72,7 @@ STEAM_ERESULT_MAP = {
     "5": "InvalidPassword：账号或密码错误/凭据不被接受",
     "6": "LoggedInElsewhere：账号已在别处登录",
     "7": "InvalidProtocolVer：协议版本不匹配",
+    "9": "Steam 手机端已拒绝登录",
     "8": "InvalidParam：参数错误，常见于 settoken 缺 steamID 或 nonce/auth 不匹配",
     "15": "AccessDenied：访问被拒绝",
     "16": "LimitExceeded：请求过多/限流",
@@ -1690,6 +1691,112 @@ def login_steam_to_kid_session(
                 return session, {"steamid": str(auth.get("steamid") or auth.get("steam_id") or "")}
         finally:
             save_json, save_steam_refresh_token = original_save_json, original_save_refresh
+
+
+@contextlib.contextmanager
+def portal_steam_request():
+    """门户二维码会话不落盘 HTTP 工件或认证令牌。"""
+    global save_json, save_steam_refresh_token
+    with PORTAL_STEAM_LOGIN_LOCK:
+        original_save_json, original_save_refresh = save_json, save_steam_refresh_token
+        save_json = lambda _path, _data: None
+        save_steam_refresh_token = lambda _token: None
+        try:
+            yield
+        finally:
+            save_json, save_steam_refresh_token = original_save_json, original_save_refresh
+
+
+def begin_steam_qr_login(proxy: str | None = None) -> tuple[requests.Session, dict[str, Any]]:
+    """创建 Steam 官方移动端确认二维码，并返回仅供服务端保存的会话状态。"""
+    with portal_steam_request():
+        session = make_session(proxy)
+        oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
+        steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
+        # Mirror the browser's pre-QR context. Steam binds the QR challenge to
+        # the OAuth login page/session cookies and its ajaxrefresh handshake.
+        login_page = session.get(
+            steam_oauth_url,
+            headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+            timeout=30,
+            allow_redirects=True,
+        )
+        if login_page.status_code != 200:
+            raise RuntimeError(f"Steam OAuth login page failed HTTP {login_page.status_code}")
+        ajaxrefresh = session.post(
+            f"{STEAM_LOGIN}/jwt/ajaxrefresh",
+            headers={
+                "User-Agent": UA,
+                "Origin": STEAM_COMMUNITY,
+                "Referer": login_page.url,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+            },
+            data={"redir": steam_oauth_url},
+            timeout=30,
+            allow_redirects=False,
+        )
+        if ajaxrefresh.status_code not in (200, 204):
+            raise RuntimeError(f"Steam ajaxrefresh failed HTTP {ajaxrefresh.status_code}")
+        payload = {
+            "device_friendly_name": UA,
+            "platform_type": DEFAULT_STEAM_PLATFORM_TYPE,
+            "website_id": "Community",
+            "device_details": {
+                "device_friendly_name": UA,
+                "platform_type": DEFAULT_STEAM_PLATFORM_TYPE,
+            },
+            "language": 6,
+            "qos_level": 2,
+        }
+        response = unwrap_response(
+            post_steam_api(session, "BeginAuthSessionViaQR", payload, referer=login_page.url)
+        )
+        if not response.get("client_id") or not response.get("request_id") or not response.get("challenge_url"):
+            raise RuntimeError("Steam 二维码创建失败：未返回有效挑战地址")
+        return session, {"auth": response, "oidc": oidc, "oauth_url": steam_oauth_url, "login_url": login_page.url}
+
+
+def poll_steam_qr_login(session: requests.Session, state: dict[str, Any]) -> dict[str, Any] | None:
+    """轮询一次扫码会话；尚未确认时返回 None，确认后完成 Steam/KRAFTON 登录。"""
+    auth = state["auth"]
+    with portal_steam_request():
+        body = post_steam_api(
+            session,
+            "PollAuthSessionStatus",
+            {"client_id": str(auth["client_id"]), "request_id": str(auth["request_id"])},
+            referer=state.get("login_url") or STEAM_COMMUNITY,
+        )
+        response = unwrap_response(body)
+        response_headers = body.get("_headers") if isinstance(body, dict) else {}
+        error_code = (
+            response.get("error_code")
+            or response.get("eresult")
+            or (response_headers or {}).get("X-eresult")
+        )
+        error_message = (
+            response.get("extended_error_message")
+            or response.get("error_message")
+            or response.get("error")
+            or (response_headers or {}).get("X-error_message")
+        )
+        if error_code is not None and str(error_code).strip().lower() not in {"", "0", "1", "ok"}:
+            raise RuntimeError(f"Steam QR login rejected EResult={error_code}: {error_message or 'remote confirmation denied'}")
+        if error_message and not (response.get("refresh_token") or response.get("access_token")):
+            raise RuntimeError(f"Steam QR login rejected: {error_message}")
+        if not (response.get("refresh_token") or response.get("access_token")):
+            return None
+        finalized = steam_finalize_login(session, response, state["oauth_url"])
+        follow_with_post_login_steps(session, state["oauth_url"], state["oidc"]["state"], "", "")
+        steamid = (
+            finalized.get("steamID")
+            or finalized.get("steamid")
+            or response.get("steamid")
+            or response.get("steam_id")
+            or auth.get("steamid")
+            or auth.get("steam_id")
+            or ""
+        )
+        return {"steamid": str(steamid)}
 
 
 def main() -> int:

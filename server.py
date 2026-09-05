@@ -5,6 +5,7 @@ import argparse
 import getpass
 import hashlib
 import hmac
+import io
 import logging
 import os
 from pathlib import Path
@@ -17,6 +18,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 import json, re, secrets
 import requests
 from global_login.soop_drops_http import DropsClient
+
+try:
+    import qrcode
+    import qrcode.image.svg
+except ImportError:
+    qrcode = None
 
 try:
     import pymysql
@@ -129,6 +136,10 @@ GLOBAL_CODE_DB_CONFIG = {
     'write_timeout': 10,
 }
 ORDERS = {}
+STEAM_QR_SESSIONS = {}
+STEAM_QR_SESSIONS_LOCK = threading.Lock()
+STEAM_QR_TTL_SECONDS = 120
+LOCAL_SEED_HOSTNAME = os.environ.get('GIFT_PORTAL_LOCAL_SEED_HOSTNAME', 'DESKTOP-GKTNGET').casefold()
 SOOP_CLAIM_RETRIES = 3
 SOOP_CLAIM_RETRY_DELAY = 1.0
 ADMIN_SESSION_COOKIE = 'dropzone_admin_session'
@@ -388,6 +399,10 @@ def steam_login_failure_response(error):
     """Translate Steam/KRAFTON login failures into safe customer actions."""
     text = str(error or '')
     lowered = text.casefold()
+    if 'soop 库存账号登录状态已过期' in lowered:
+        return 'SOOP 库存账号登录状态已过期，请在后台更新该库存账号的登录信息后重试。', 409, False
+    if 'soop authorization did not return to krafton' in lowered:
+        return 'SOOP 授权绑定失败，请在后台更新该库存账号的登录信息后重试。', 409, False
     if 'invalidpassword' in lowered or 'x-eresult\': \'5\'' in lowered:
         return 'Steam 账号或密码错误，请检查后重试。', 401, False
     if any(value in lowered for value in ('steamguardrequired', 'steam guard verification is required', 'steam token verification is required', 'accountlogindeniedneedtwofactor', 'eresult=85')):
@@ -396,6 +411,10 @@ def steam_login_failure_response(error):
         return 'Steam令牌错误或已过期，请重新输入。', 401, True
     if any(value in lowered for value in ('accountlogindeniedthrottle', 'limitexceeded', 'ratelimitexceeded', 'eresult=16', 'eresult=84', 'eresult=87')):
         return 'Steam 登录尝试过于频繁，请稍后再试。', 429, False
+    if any(value in lowered for value in ('accountlogondenied', 'qr login rejected', 'remote confirmation denied', 'eresult=63')):
+        return 'Steam 阻止了本次登录，请在 Steam 手机客户端确认常用位置和登录行为后重试。', 403, False
+    if 'eresult=9' in lowered or 'steam 手机端已拒绝登录' in lowered:
+        return 'Steam 手机端已拒绝登录，请重新扫码。', 409, False
     if any(value in lowered for value in ('invalidloginauthcode', 'expiredloginauthcode', 'eresult=65', 'eresult=71')):
         return 'Steam 账号需要邮箱验证码，请先在 Steam 客户端完成验证后重试。', 409, False
     if any(value in lowered for value in ('accountlogondeniednomail', 'accountlogondeniedverifiedemailrequired', 'eresult=66', 'eresult=74')):
@@ -417,6 +436,16 @@ def steam_login_failure_response(error):
     if 'serviceunavailable' in lowered or 'eresult=20' in lowered:
         return 'Steam 登录服务暂时不可用，请稍后重试。', 503, False
     return 'Steam 登录或 KRAFTON 授权失败，请确认账号已关联 KRAFTON/KID 后重试。', 503, False
+
+
+def qr_login_failure_message(error):
+    """Use the same customer-facing mapping as the regular redemption path."""
+    text = str(error or '')
+    if 'SOOP 库存账号登录状态已过期' in text:
+        return 'SOOP 库存账号已过期。'
+    if 'SOOP authorization did not return to KRAFTON' in text:
+        return 'SOOP 绑定失败，请在后台更新该库存账号的登录信息后重试。'
+    return steam_login_failure_response(error)[0]
 
 
 def soop_account_name_from_cookie(cookie):
@@ -861,6 +890,86 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
     }
 
 
+def build_steam_qr_svg(challenge_url):
+    """生成本地 SVG，避免将一次性 Steam 挑战链接交给第三方二维码服务。"""
+    if qrcode is None:
+        raise RuntimeError('服务器缺少二维码生成组件。')
+    image = qrcode.make(challenge_url, image_factory=qrcode.image.svg.SvgPathImage, border=2)
+    output = io.BytesIO()
+    image.save(output)
+    return output.getvalue().decode('utf-8')
+
+
+def cleanup_steam_qr_sessions():
+    now = time.time()
+    with STEAM_QR_SESSIONS_LOCK:
+        expired = [key for key, value in STEAM_QR_SESSIONS.items() if value['expires_at'] <= now]
+        for key in expired:
+            STEAM_QR_SESSIONS.pop(key, None)
+
+
+def finish_steam_qr_login(qr_session):
+    """在扫码确认后将 Steam 会话连接到库存 SOOP 账号。"""
+    from global_login import krafton_pure_http_login as krafton_login
+    from global_login.pubg_cookie_getter_http import (
+        bind_soop_to_session, soop_cookie_from_session, unbind_soop_if_linked,
+    )
+
+    session = qr_session['session']
+    profile_response = krafton_login.profile(session)
+    profile_body = krafton_login.try_json(profile_response)
+    if profile_response.status_code != 200:
+        raise GlobalLoginError(f'KRAFTON profile 验证失败 HTTP {profile_response.status_code}')
+    unbind_soop_if_linked(session, profile_body)
+    bind_soop_to_session(session, qr_session['inventory'][1])
+    return soop_cookie_from_session(session, qr_session['inventory'][1])
+
+
+def process_steam_qr_claim(qr_session, steam_info):
+    """在扫码确认后异步完成 KID/SOOP 领取，避免阻塞二维码状态响应。"""
+    try:
+        claim_cookie = finish_steam_qr_login(qr_session)
+        claim_token = secrets.token_hex(16)
+        if not reserve_global_code(qr_session['code'], claim_token):
+            with qr_session['lock']:
+                qr_session['terminal_status'] = 'conflict'
+                qr_session['terminal_message'] = '该激活码正在领取中或已使用。'
+            return
+        try:
+            _, reward, _ = claim_soop_stock(qr_session['inventory'], claim_cookie=claim_cookie)
+        except NoClaimableSoopRewardError:
+            release_global_code_reservation(qr_session['code'], claim_token)
+            with qr_session['lock']:
+                qr_session['terminal_status'] = 'failed'
+                qr_session['terminal_message'] = 'SOOP 账号中没有可领取的奖励。'
+            return
+        except Exception:
+            release_global_code_reservation(qr_session['code'], claim_token)
+            logger.exception('SOOP reward claim failed after Steam QR login')
+            with qr_session['lock']:
+                qr_session['terminal_status'] = 'failed'
+                qr_session['terminal_message'] = 'Steam 登录成功，但 SOOP 宝箱领取失败，请稍后重试。'
+            return
+        steamid = steam_info.get('steamid') or 'Steam 扫码用户'
+        try:
+            completed = complete_global_code_claim(qr_session['code'], claim_token, steamid, reward)
+        except Exception:
+            logger.exception('Activation-code completion persistence failed after Steam QR claim')
+            completed = False
+        with qr_session['lock']:
+            qr_session['terminal_status'] = 'completed' if completed else 'submitted'
+            qr_session['terminal_message'] = (
+                '提交成功，请重启大厅。' if completed
+                else 'SOOP 宝箱已提交领取，兑换状态正在确认，请稍后查询结果。'
+            )
+    except Exception as exc:
+        logger.exception('Steam QR claim worker failed')
+        message = qr_login_failure_message(exc)
+        with qr_session['lock']:
+            qr_session['terminal_status'] = 'failed'
+            qr_session['terminal_message'] = message
+
+
 def get_global_code_status(code):
     """Return the current database state of a global activation code."""
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
@@ -1114,6 +1223,11 @@ def is_loopback_request(headers):
     return host in ('localhost', '127.0.0.1', '::1')
 
 
+def is_local_seed_host():
+    """只有指定开发电脑使用单 seed 池，部署服务器沿用常规容量。"""
+    return socket.gethostname().casefold() == LOCAL_SEED_HOSTNAME
+
+
 def get_feature_config(local_access=False):
     """Read feature switches from MySQL, preferring this machine's override."""
     if local_access:
@@ -1276,6 +1390,44 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception('Feature configuration query failed')
                 return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
+        qr_status_match = re.fullmatch(r'/api/qr/([A-Za-z0-9_-]{16,64})/status', path)
+        if qr_status_match:
+            cleanup_steam_qr_sessions()
+            with STEAM_QR_SESSIONS_LOCK:
+                qr_session = STEAM_QR_SESSIONS.get(qr_status_match.group(1))
+            if qr_session is None:
+                return self.send_json({'message': '二维码已过期，请重新生成。'}, 410)
+            with qr_session['lock']:
+                if qr_session.get('terminal_status'):
+                    return self.send_json({
+                        'status': qr_session['terminal_status'],
+                        'message': qr_session.get('terminal_message', '提交成功，请重启大厅。'),
+                    })
+                if qr_session.get('claim_status') == 'processing':
+                    return self.send_json({'status': 'processing', 'message': '正在提货，请稍候…'}, 202)
+                try:
+                    from global_login import steam_kid_login
+                    steam_info = steam_kid_login.poll_steam_qr_login(
+                        qr_session['session'], qr_session['steam_state'],
+                    )
+                    if steam_info is None:
+                        return self.send_json({'status': 'pending', 'message': '等待 Steam 手机端扫码确认…'})
+                    qr_session['claim_status'] = 'processing'
+                    threading.Thread(
+                        target=process_steam_qr_claim,
+                        args=(qr_session, steam_info),
+                        name='steam-qr-claim', daemon=True,
+                    ).start()
+                    return self.send_json({'status': 'confirmed', 'message': 'Steam 扫码成功，正在提货…'}, 202)
+                except Exception as exc:
+                    logger.exception('Steam QR login failed')
+                    message = qr_login_failure_message(exc)
+                    # The surrounding session lock is already held here. Re-acquiring
+                    # this non-reentrant lock would deadlock the status request exactly
+                    # when Steam returns a rejection/error result.
+                    qr_session['terminal_status'] = 'failed'
+                    qr_session['terminal_message'] = message
+                    return self.send_json({'message': message}, 409 if 'SOOP' in message else 503)
         match = re.fullmatch(r'/api/orders/([^/]+)', path)
         if match:
             code = normalize_activation_code(unquote(match.group(1)))
@@ -1317,7 +1469,8 @@ class Handler(BaseHTTPRequestHandler):
                 from global_login import krafton_pure_http_login as krafton_login
                 from global_login.vpn_switcher import get_vpn_switcher
                 if data.get('seed_capacity') is not None:
-                    krafton_login._AbckPool.set_capacity(int(data.get('seed_capacity')))
+                    requested_capacity = int(data.get('seed_capacity'))
+                    krafton_login._AbckPool.set_capacity(requested_capacity)
                 proxies = data.get('seed_proxies')
                 if proxies is not None:
                     if not isinstance(proxies, list) or len(proxies) > 2 or any(not str(p).strip() for p in proxies):
@@ -1427,6 +1580,48 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception('Admin activation-code generation failed')
                 return self.send_json({'message': '激活码生成失败。'}, 503)
+        if path == '/api/qr/create':
+            try:
+                if not get_feature_config(is_loopback_request(self.headers))['qr']:
+                    return self.send_json({'message': '当前未启用 Steam 扫码提货。'}, 403)
+            except Exception:
+                logger.exception('Feature configuration query failed')
+                return self.send_json({'message': '提货方式配置暂不可用，请稍后重试。'}, 503)
+            data = self.read_json()
+            code = normalize_activation_code((data or {}).get('code', ''))
+            if code is None:
+                return self.send_json({'message': '激活码格式错误。'}, 400)
+            try:
+                code_status, _, _ = get_global_code_status(code)
+                if code_status == 'missing':
+                    return self.send_json({'message': '激活码不存在或已失效。'}, 404)
+                if code_status in ('used', 'processing'):
+                    return self.send_json({'message': '该激活码已经使用或正在领取中。'}, 409)
+                inventory = get_soop_inventory_for_code(code)
+                if not inventory:
+                    return self.send_json({'message': '该激活码尚未关联可领取的 SOOP 宝箱。'}, 409)
+                from global_login import steam_kid_login
+                session, steam_state = steam_kid_login.begin_steam_qr_login(STEAM_KID_PROXY)
+                challenge_url = str(steam_state['auth']['challenge_url'])
+                qr_id = secrets.token_urlsafe(18)
+                qr_session = {
+                    'code': code, 'inventory': inventory, 'session': session,
+                    'steam_state': steam_state, 'expires_at': time.time() + STEAM_QR_TTL_SECONDS,
+                    'lock': threading.Lock(),
+                }
+                cleanup_steam_qr_sessions()
+                with STEAM_QR_SESSIONS_LOCK:
+                    STEAM_QR_SESSIONS[qr_id] = qr_session
+                return self.send_json({
+                    'qr_id': qr_id,
+                    'qr_svg': build_steam_qr_svg(challenge_url),
+                    'expires_at': int(qr_session['expires_at']),
+                }, 201)
+            except ValueError as exc:
+                return self.send_json({'message': str(exc)}, 400)
+            except Exception:
+                logger.exception('Steam QR creation failed')
+                return self.send_json({'message': 'Steam 扫码二维码创建失败，请稍后重试。'}, 503)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
         if path == '/api/redeem':
             try:
@@ -1692,8 +1887,14 @@ if __name__ == '__main__':
             os.environ.get('KRAFTON_RISKBYPASS_PROXY')
             or os.environ.get('PUBG_RISKBYPASS_PROXY')
         )
-        logger.info('[riskbypass-pool] 服务启动，调度 seed 初始化 count=5')
-        krafton_login.initialize_abck_pool(proxy=seed_proxy, count=5)
+        local_seed_host = is_local_seed_host()
+        initial_seed_count = 1 if local_seed_host else 5
+        if local_seed_host:
+            krafton_login._AbckPool.set_capacity(1)
+            logger.info('[riskbypass-pool] 本机 %s 启动，seed 容量固定为 1', socket.gethostname())
+        else:
+            logger.info('[riskbypass-pool] 非本机 %s 启动，使用默认 seed 容量 %s', socket.gethostname(), initial_seed_count)
+        krafton_login.initialize_abck_pool(proxy=seed_proxy, count=initial_seed_count)
     except Exception:
         logger.exception('[riskbypass-pool] 服务启动初始化调度失败')
     port = int(os.environ.get('GIFT_PORTAL_PORT', '8000'))
