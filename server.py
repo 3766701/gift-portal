@@ -733,6 +733,7 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
     """Authenticate Steam into KRAFTON, then attach the selected SOOP account."""
     from global_login import krafton_pure_http_login as krafton_login
     from global_login import steam_kid_login
+    from global_login.vpn_switcher import get_vpn_switcher
     from global_login.pubg_cookie_getter_http import (
         bind_soop_to_session,
         soop_cookie_from_session,
@@ -740,8 +741,17 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
     )
 
     fallback_proxy = STEAM_KID_PROXY
+    switcher = None
+    try:
+        switcher = get_vpn_switcher()
+        if switcher.is_vpn_available():
+            fallback_proxy = switcher.proxies.get('http') or fallback_proxy
+            logger.info('Steam KID using Clash node=%s proxy=%s', switcher.get_current_node(), fallback_proxy)
+        else:
+            logger.warning('Clash controller has no usable node; using local proxy=%s', fallback_proxy)
+    except Exception as exc:
+        logger.warning('Clash controller unavailable; using local proxy=%s error=%s', fallback_proxy, type(exc).__name__)
     proxies = [fallback_proxy]
-    logger.info('Steam KID using local proxy host=127.0.0.1:7890')
     last_proxy_error = None
     for proxy in proxies:
         try:
@@ -752,7 +762,20 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as exc:
             last_proxy_error = exc
             logger.warning('Steam proxy failed host=%s error=%s', proxy_host, type(exc).__name__)
+            if switcher is not None and len(proxies) < 3 and switcher.switch_to_next_node():
+                next_proxy = switcher.proxies.get('http') or fallback_proxy
+                # Clash node changes happen behind the same local listener.
+                proxies.append(next_proxy)
             continue
+        except RuntimeError as exc:
+            last_proxy_error = exc
+            text = str(exc).lower()
+            if switcher is not None and any(code in text for code in ('eresult=16', 'eresult=84', 'eresult=87', 'http 403', 'http 429')):
+                if len(proxies) < 3 and switcher.switch_to_next_node():
+                    next_proxy = switcher.proxies.get('http') or fallback_proxy
+                    proxies.append(next_proxy)
+                    continue
+            raise
     else:
         if last_proxy_error:
             raise last_proxy_error
