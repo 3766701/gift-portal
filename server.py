@@ -1426,6 +1426,25 @@ if __name__ == '__main__':
         logger.addHandler(database_log_handler)
     except Exception:
         logger.exception('System log table initialization failed')
+    # Initialize the shared Mihomo/Clash controller and select a node before
+    # accepting requests, so the first Steam login does not pay the startup
+    # discovery and latency-test cost.
+    try:
+        from global_login.vpn_switcher import get_vpn_switcher
+        logger.info('[clash] 服务启动，开始初始化 Mihomo 节点')
+        clash_switcher = get_vpn_switcher()
+        if clash_switcher.is_vpn_available():
+            logger.info(
+                '[clash] 初始化完成 group=%s node=%s available=%s proxy=%s',
+                clash_switcher.get_proxy_group(),
+                clash_switcher.get_current_node(),
+                clash_switcher.get_available_nodes_count(),
+                clash_switcher.proxies.get('http'),
+            )
+        else:
+            logger.warning('[clash] 初始化完成但没有可用节点；Steam 登录请求将继续使用本机代理入口')
+    except Exception:
+        logger.exception('[clash] 服务启动初始化失败')
     # Warm the shared RiskByPass seed pool when the service starts.  The
     # global getter is otherwise lazy-loaded on the first redemption request.
     try:
