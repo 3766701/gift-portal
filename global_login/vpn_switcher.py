@@ -37,7 +37,9 @@ class VPNSwitcher:
         
         # VPN相关配置（硬编码）（硬编码）
         self.proxy_group = self._normalize_proxy_group(proxy_group)  # 可由GUI输入覆盖
-        self.test_url = "https://api-foc.krafton.com/redeem/v3/register"  # 使用Steam市场监控接口作为测试URL
+        # Use the Steam auth endpoint as the latency target. Mihomo's delay
+        # probe only tests reachability/latency and does not submit credentials.
+        self.test_url = "https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"
         self.max_latency = 3000  # 最大允许延迟(毫秒)
         self.test_timeout = 5  # 节点测试超时时间(秒)
         self.max_retries = 3  # 请求重试次数
