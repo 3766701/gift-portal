@@ -1060,6 +1060,32 @@ class Handler(BaseHTTPRequestHandler):
         path = application_path(self.path)
         if path == '/api/admin/session':
             return self.send_json({'authenticated': bool(get_admin_session_token(self.headers))})
+        if path == '/api/admin/runtime-status':
+            if not self.require_admin(): return
+            try:
+                from global_login import krafton_pure_http_login as krafton_login
+                from global_login.vpn_switcher import get_vpn_switcher
+                seed_status = krafton_login._AbckPool.status()
+                switcher = get_vpn_switcher()
+                return self.send_json({
+                    'seed': {
+                        'valid': seed_status.get('queue_size', 0),
+                        'fresh': seed_status.get('fresh', 0),
+                        'in_use': seed_status.get('in_use', 0),
+                        'target': seed_status.get('target', 0),
+                    },
+                    'clash': {
+                        'available': bool(switcher.is_vpn_available()),
+                        'group': switcher.get_proxy_group(),
+                        'node': switcher.get_current_node(),
+                        'available_nodes': switcher.get_available_nodes_count(),
+                        'proxy': switcher.proxies.get('http'),
+                        'controller': switcher.clash_api,
+                    },
+                })
+            except Exception:
+                logger.exception('Admin runtime status query failed')
+                return self.send_json({'message': '运行状态查询失败。'}, 503)
         if path == '/api/admin/inventory':
             if not self.require_admin(): return
             try:

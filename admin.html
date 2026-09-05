@@ -33,6 +33,7 @@
           <button class="nav-item is-active" type="button" data-view="import-view">导入库存</button>
           <button class="nav-item" type="button" data-view="inventory-view">库存管理</button>
           <button class="nav-item" type="button" data-view="claims-view">领取记录</button>
+          <button class="nav-item" type="button" data-view="runtime-view">运行状态</button>
           <button class="nav-item" type="button" data-view="system-logs-view">系统日志</button>
         </aside>
         <div class="admin-content">
@@ -91,6 +92,23 @@
               </div>
               <p id="system-logs-message" class="form-message"></p>
               <div id="system-logs-pagination" class="pagination"></div>
+            </section>
+          </section>
+
+          <section id="runtime-view" class="admin-page" hidden>
+            <section class="admin-card runtime-card">
+              <div class="panel-title"><h1>运行状态</h1><button id="refresh-runtime" class="layui-btn layui-btn-primary" type="button">刷新</button></div>
+              <div class="runtime-grid">
+                <div class="runtime-item"><span>有效 seed</span><strong id="runtime-seed-valid">--</strong></div>
+                <div class="runtime-item"><span>未使用 seed</span><strong id="runtime-seed-fresh">--</strong></div>
+                <div class="runtime-item"><span>占用中 seed</span><strong id="runtime-seed-in-use">--</strong></div>
+                <div class="runtime-item"><span>当前 Clash 节点</span><strong id="runtime-clash-node">--</strong></div>
+                <div class="runtime-item"><span>代理组</span><strong id="runtime-clash-group">--</strong></div>
+                <div class="runtime-item"><span>可用节点</span><strong id="runtime-clash-count">--</strong></div>
+                <div class="runtime-item"><span>代理入口</span><strong id="runtime-clash-proxy">--</strong></div>
+                <div class="runtime-item"><span>控制器</span><strong id="runtime-clash-controller">--</strong></div>
+              </div>
+              <p id="runtime-message" class="form-message"></p>
             </section>
           </section>
         </div>

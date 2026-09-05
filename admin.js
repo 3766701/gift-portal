@@ -79,10 +79,22 @@ const renderSystemLogs=items=>{
     action.append(button);row.append(action);body.append(row);
   });
 };
+const renderRuntimeStatus=data=>{
+  const seed=data.seed||{},clash=data.clash||{};
+  el('runtime-seed-valid').textContent=String(seed.valid??'--');
+  el('runtime-seed-fresh').textContent=String(seed.fresh??'--');
+  el('runtime-seed-in-use').textContent=String(seed.in_use??'--');
+  el('runtime-clash-node').textContent=clash.node||'--';
+  el('runtime-clash-group').textContent=clash.group||'--';
+  el('runtime-clash-count').textContent=String(clash.available_nodes??'--');
+  el('runtime-clash-proxy').textContent=clash.proxy||'--';
+  el('runtime-clash-controller').textContent=clash.controller||'--';
+};
 
 const loadInventory=async(page=1)=>{setMessage('table-message');const search=el('inventory-search').value.trim();try{const data=await request(`/api/admin/inventory?page=${page}&page_size=20&q=${encodeURIComponent(search)}`);renderInventory(data.inventory||[]);renderPagination('inventory-pagination',data,loadInventory);}catch(error){if(error.status===401){showLogin();return;}setMessage('table-message',error.message);}};
 const loadClaims=async(page=1)=>{setMessage('claims-message');const search=el('claims-search').value.trim();try{const data=await request(`/api/admin/claims?page=${page}&page_size=20&q=${encodeURIComponent(search)}`);renderClaims(data.claims||[]);renderPagination('claims-pagination',data,loadClaims);}catch(error){if(error.status===401){showLogin();return;}setMessage('claims-message',error.message);}};
 const loadSystemLogs=async(page=1)=>{setMessage('system-logs-message');const search=el('system-logs-search').value.trim();try{const data=await request(`/api/admin/system-logs?page=${page}&page_size=20&q=${encodeURIComponent(search)}`);renderSystemLogs(data.logs||[]);renderPagination('system-logs-pagination',data,loadSystemLogs);}catch(error){if(error.status===401){showLogin();return;}setMessage('system-logs-message',error.message);}};
+const loadRuntimeStatus=async()=>{setMessage('runtime-message');try{renderRuntimeStatus(await request('/api/admin/runtime-status'));}catch(error){if(error.status===401){showLogin();return;}setMessage('runtime-message',error.message);}};
 const generateCode=async(id,button)=>{button.disabled=true;try{const data=await request('/api/admin/activation-codes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inventory_id:id})});setMessage('table-message',`已生成激活码：${data.code}`);await loadInventory();}catch(error){setMessage('table-message',error.message);}finally{button.disabled=false;}};
 
 el('login-form').addEventListener('submit',async event=>{event.preventDefault();setMessage('login-message');try{await request('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:el('admin-username').value,password:el('admin-password').value})});el('admin-password').value='';showAdmin();loadInventory();loadClaims();loadSystemLogs();}catch(error){setMessage('login-message',error.message);}});
@@ -92,6 +104,7 @@ el('refresh-claims').addEventListener('click',()=>loadClaims(1));
 el('inventory-search-button').addEventListener('click',()=>loadInventory(1));
 el('claims-search-button').addEventListener('click',()=>loadClaims(1));
 el('refresh-system-logs').addEventListener('click',()=>loadSystemLogs(1));
+el('refresh-runtime').addEventListener('click',loadRuntimeStatus);
 el('system-logs-search-button').addEventListener('click',()=>loadSystemLogs(1));
 el('inventory-search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();loadInventory(1);}});
 el('claims-search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();loadClaims(1);}});
@@ -100,4 +113,4 @@ el('copy-generated-codes').addEventListener('click',copyGeneratedCodes);
 el('close-system-log-detail').addEventListener('click',()=>el('system-log-detail-dialog').close());
 el('logout').addEventListener('click',async()=>{await request('/api/admin/logout',{method:'POST'});showLogin();});
 document.querySelectorAll('.nav-item').forEach(item=>item.addEventListener('click',()=>showAdminPage(item.dataset.view)));
-request('/api/admin/session').then(data=>{if(data.authenticated){showAdmin();loadInventory();loadClaims();loadSystemLogs();}else showLogin();}).catch(showLogin);
+request('/api/admin/session').then(data=>{if(data.authenticated){showAdmin();loadInventory();loadClaims();loadSystemLogs();loadRuntimeStatus();}else showLogin();}).catch(showLogin);
