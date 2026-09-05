@@ -51,12 +51,15 @@ body { min-height: 100vh; margin: 0; background: radial-gradient(circle at 0 0, 
 .inventory-table tbody tr { transition: background .16s; }
 .inventory-table tbody tr:hover { background: #f7fcfb; }
 .inventory-table td:last-child { text-align: center; }
-.claims-card .inventory-table th:nth-child(1), .claims-card .inventory-table td:nth-child(1) { width: 7%; }
-.claims-card .inventory-table th:nth-child(2), .claims-card .inventory-table td:nth-child(2) { width: 24%; }
-.claims-card .inventory-table th:nth-child(3), .claims-card .inventory-table td:nth-child(3) { width: 20%; }
-.claims-card .inventory-table th:nth-child(4), .claims-card .inventory-table td:nth-child(4) { width: 18%; }
-.claims-card .inventory-table th:nth-child(5), .claims-card .inventory-table td:nth-child(5) { width: 14%; }
-.claims-card .inventory-table th:nth-child(6), .claims-card .inventory-table td:nth-child(6) { width: 17%; }
+.claims-card .inventory-table { min-width: 1120px; }
+.claims-card .inventory-table th:nth-child(1), .claims-card .inventory-table td:nth-child(1) { width: 5%; }
+.claims-card .inventory-table th:nth-child(2), .claims-card .inventory-table td:nth-child(2) { width: 17%; }
+.claims-card .inventory-table th:nth-child(3), .claims-card .inventory-table td:nth-child(3) { width: 15%; }
+.claims-card .inventory-table th:nth-child(4), .claims-card .inventory-table td:nth-child(4) { width: 15%; }
+.claims-card .inventory-table th:nth-child(5), .claims-card .inventory-table td:nth-child(5) { width: 11%; }
+.claims-card .inventory-table th:nth-child(6), .claims-card .inventory-table td:nth-child(6) { width: 12%; }
+.claims-card .inventory-table th:nth-child(7), .claims-card .inventory-table td:nth-child(7) { width: 10%; }
+.claims-card .inventory-table th:nth-child(8), .claims-card .inventory-table td:nth-child(8) { width: 15%; }
 .inventory-card .inventory-table th:nth-child(1), .inventory-card .inventory-table td:nth-child(1) { width: 6%; }
 .inventory-card .inventory-table th:nth-child(2), .inventory-card .inventory-table td:nth-child(2) { width: 19%; }
 .inventory-card .inventory-table th:nth-child(3), .inventory-card .inventory-table td:nth-child(3) { width: 14%; }

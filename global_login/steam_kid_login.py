@@ -488,13 +488,13 @@ def begin_auth(s: requests.Session, account_name: str, password: str, referer: s
     return resp
 
 
-def update_guard(s: requests.Session, auth: dict[str, Any], code: str) -> None:
+def update_guard(s: requests.Session, auth: dict[str, Any], code: str, guard_type: str = "") -> None:
     steamid = str(auth.get("steamid") or auth.get("steam_id") or "")
     client_id = str(auth.get("client_id") or "")
     if not steamid or not client_id:
         raise RuntimeError(f"auth missing steamid/client_id: {auth}")
-    # 5位手机令牌通常 code_type=3；7位备用码优先 code_type=2，再试3。
-    types = [3] if len(code) == 5 else [2, 3]
+    # Steam 邮箱验证码为 code_type=2；手机令牌为 3。备用码保留原有兼容重试。
+    types = [2] if guard_type == "email" else ([3] if len(code) == 5 else [2, 3])
     last = None
     for code_type in types:
         body = post_steam_api(s, "UpdateAuthSessionWithSteamGuardCode", {"client_id": client_id, "steamid": steamid, "code": code, "code_type": code_type}, referer=STEAM_COMMUNITY)
@@ -1654,6 +1654,7 @@ def login_steam_to_kid_session(
     steam_password: str,
     steam_token: str = "",
     proxy: str | None = None,
+    steam_guard_type: str = "",
 ) -> tuple[requests.Session, dict[str, Any]]:
     """Log Steam into its linked KRAFTON account and return its live session."""
     steam_user = str(steam_user or "").strip()
@@ -1661,7 +1662,7 @@ def login_steam_to_kid_session(
     guard = str(steam_token or "").strip().replace(" ", "")
     if not steam_user or not steam_password:
         raise ValueError("Steam 账号或密码为空")
-    if guard and classify_steam_token(guard) == "unknown":
+    if guard and (steam_guard_type != "email" and classify_steam_token(guard) == "unknown"):
         raise ValueError("Steam令牌应为 5 位手机令牌或 7 位备用码")
 
     # Portal requests keep credentials and sessions in memory only. The
@@ -1674,10 +1675,19 @@ def login_steam_to_kid_session(
             login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)
             auth = begin_auth(session, steam_user, steam_password, login_page.url)
             allowed = auth.get("allowed_confirmations") or []
-            if not guard and allowed:
-                raise SteamGuardRequired("Steam token verification is required")
+            confirmation_types = {
+                str(item.get("confirmation_type") if isinstance(item, dict) else item)
+                for item in allowed
+            }
+            # 2=邮箱验证码，3=手机令牌；其他项不需要用户输入验证码。
+            if not guard and confirmation_types.intersection({"2", "3"}):
+                email_confirmation = "2" in confirmation_types and "3" not in confirmation_types
+                raise SteamGuardRequired(
+                    "Steam email code verification is required"
+                    if email_confirmation else "Steam token verification is required"
+                )
             if guard:
-                update_guard(session, auth, guard)
+                update_guard(session, auth, guard, steam_guard_type)
             polled = poll_auth(session, auth)
             steam_finalize_login(session, polled, steam_oauth_url)
             follow_with_post_login_steps(session, steam_oauth_url, oidc["state"], "", "")

@@ -56,10 +56,15 @@ const renderInventory=items=>{
 
 const renderPagination=(target,data,onChange)=>{const node=el(target),pages=Math.max(1,Math.ceil(data.total/data.page_size));node.replaceChildren();const previous=document.createElement('button'),next=document.createElement('button'),summary=document.createElement('span');previous.type=next.type='button';previous.textContent='上一页';next.textContent='下一页';previous.disabled=data.page<=1;next.disabled=data.page>=pages;summary.textContent=`第 ${data.page} / ${pages} 页，共 ${data.total} 条`;previous.addEventListener('click',()=>onChange(data.page-1));next.addEventListener('click',()=>onChange(data.page+1));node.append(previous,summary,next);};
 
+const formatClaimDuration=seconds=>{
+  if(seconds==null)return '--';
+  const total=Math.max(0,Number(seconds)||0),minutes=Math.floor(total/60),remaining=total%60;
+  return minutes?`${minutes} 分 ${remaining} 秒`:`${remaining} 秒`;
+};
 const renderClaims=items=>{
   const body=el('claims-body');body.replaceChildren();
-  if(!items.length){const row=document.createElement('tr');row.className='empty-row';const item=cell('暂无领取记录');item.colSpan=6;row.append(item);body.append(row);return;}
-  items.forEach(item=>{const row=document.createElement('tr');row.append(cell(String(item.id)),cell(item.activation_code,'code-value'),cell(item.claim_account),productNameCell(item.product_name),cell(item.soop_account_name),cell(item.claimed_at));body.append(row);});
+  if(!items.length){const row=document.createElement('tr');row.className='empty-row';const item=cell('暂无领取记录');item.colSpan=8;row.append(item);body.append(row);return;}
+  items.forEach(item=>{const row=document.createElement('tr');row.append(cell(String(item.id)),cell(item.activation_code,'code-value'),cell(item.claim_account),productNameCell(item.product_name),cell(item.created_by),cell(item.soop_account_name),cell(formatClaimDuration(item.claim_duration_seconds)),cell(item.claimed_at));body.append(row);});
 };
 
 const truncateLogMessage=value=>{
@@ -118,6 +123,8 @@ el('refresh').addEventListener('click',()=>loadInventory(1));
 el('refresh-claims').addEventListener('click',()=>loadClaims(1));
 el('inventory-search-button').addEventListener('click',()=>loadInventory(1));
 el('claims-search-button').addEventListener('click',()=>loadClaims(1));
+el('clear-inventory-search').addEventListener('click',()=>{el('inventory-search').value='';loadInventory(1);});
+el('clear-claims-search').addEventListener('click',()=>{el('claims-search').value='';loadClaims(1);});
 el('refresh-system-logs').addEventListener('click',()=>loadSystemLogs(1));
 el('refresh-runtime').addEventListener('click',loadRuntimeStatus);
 el('runtime-settings-form').addEventListener('submit',event=>{event.preventDefault();saveRuntimeSettings(false);});

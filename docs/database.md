@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS activation_claims (
     claim_account VARCHAR(255) NOT NULL,
     claim_password TEXT NOT NULL,
     product_name VARCHAR(255) NOT NULL,
+    claim_duration_seconds INT UNSIGNED NULL,
     claimed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_activation_claims_code (activation_code_id),
     KEY ix_activation_claims_claimed_at (claimed_at),
@@ -75,9 +76,10 @@ CREATE TABLE IF NOT EXISTS activation_claims (
 | `claim_account` | 前台提交的账号名 |
 | `claim_password` | 保留的旧字段；新领取记录写入空字符串，不保存前台密码。 |
 | `product_name` | Drops 库存接口返回的实际领取商品名（`itemName`） |
+| `claim_duration_seconds` | 服务端完成账号登录与 SOOP 领取的完整耗时（秒）；扫码提货从扫码确认后开始统计，后台手动标记为 `0`。 |
 | `claimed_at` | 领取时间 |
 
-管理端的“领取记录”商品列显示关联 `soop_inventory.product_name`，即录入库存时配置的商品名称。
+管理端的“领取记录”商品列显示关联 `soop_inventory.product_name`，即录入库存时配置的商品名称；录入人显示关联库存的 `created_by`。
 
 ## Feature configuration
 

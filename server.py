@@ -405,6 +405,8 @@ def steam_login_failure_response(error):
         return 'SOOP 授权绑定失败，请在后台更新该库存账号的登录信息后重试。', 409, False
     if 'invalidpassword' in lowered or 'x-eresult\': \'5\'' in lowered:
         return 'Steam 账号或密码错误，请检查后重试。', 401, False
+    if 'steam email code verification is required' in lowered:
+        return '需要Steam邮箱验证码。', 428, True
     if any(value in lowered for value in ('steamguardrequired', 'steam guard verification is required', 'steam token verification is required', 'accountlogindeniedneedtwofactor', 'eresult=85')):
         return '需要Steam令牌。', 428, True
     if any(value in lowered for value in ('steam guard rejected', 'steam令牌校验失败', 'twofactorcodemismatch', 'eresult=88', 'eresult=89')):
@@ -416,7 +418,7 @@ def steam_login_failure_response(error):
     if 'eresult=9' in lowered or 'steam 手机端已拒绝登录' in lowered:
         return 'Steam 手机端已拒绝登录，请重新扫码。', 409, False
     if any(value in lowered for value in ('invalidloginauthcode', 'expiredloginauthcode', 'eresult=65', 'eresult=71')):
-        return 'Steam 账号需要邮箱验证码，请先在 Steam 客户端完成验证后重试。', 409, False
+        return 'Steam邮箱验证码错误或已过期，请重新输入。', 401, True
     if any(value in lowered for value in ('accountlogondeniednomail', 'accountlogondeniedverifiedemailrequired', 'eresult=66', 'eresult=74')):
         return 'Steam 账号邮箱尚未验证或不可用，请先在 Steam 客户端完成邮箱验证。', 409, False
     if any(value in lowered for value in ('iploginrestrictionfailed', 'eresult=72')):
@@ -567,9 +569,9 @@ def get_admin_claims(page, page_size, search):
         with connection.cursor() as cursor:
             where = (
                 'WHERE ac.activation_code LIKE %s OR ac.claim_account LIKE %s OR si.product_name LIKE %s '
-                'OR si.soop_account_name LIKE %s'
+                'OR si.soop_account_name LIKE %s OR si.created_by LIKE %s'
             ) if search else ''
-            params = [f'%{search}%'] * 4 if search else []
+            params = [f'%{search}%'] * 5 if search else []
             cursor.execute(
                 'SELECT COUNT(*) FROM activation_claims ac '
                 'LEFT JOIN activation_code_inventory aci ON aci.activation_code_id = ac.activation_code_id '
@@ -578,8 +580,8 @@ def get_admin_claims(page, page_size, search):
             )
             total = cursor.fetchone()[0]
             cursor.execute(
-                'SELECT ac.id, ac.activation_code, ac.claim_account, si.product_name, '
-                'ac.claimed_at, si.soop_account_name '
+                'SELECT ac.id, ac.activation_code, ac.claim_account, si.product_name, si.created_by, '
+                'ac.claimed_at, si.soop_account_name, ac.claim_duration_seconds '
                 'FROM activation_claims ac '
                 'LEFT JOIN activation_code_inventory aci ON aci.activation_code_id = ac.activation_code_id '
                 'LEFT JOIN soop_inventory si ON si.id = aci.soop_inventory_id '
@@ -786,9 +788,9 @@ def mark_soop_inventory_claimed(inventory_id):
             )
             cursor.execute(
                 'INSERT INTO activation_claims '
-                '(activation_code_id, activation_code, claim_account, claim_password, product_name, claimed_at) '
-                'VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())',
-                (activation_code_id, code, '后台手动标记', '', product_name),
+                '(activation_code_id, activation_code, claim_account, claim_password, product_name, claim_duration_seconds, claimed_at) '
+                'VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())',
+                (activation_code_id, code, '后台手动标记', '', product_name, 0),
             )
         connection.commit()
     except Exception:
@@ -951,7 +953,7 @@ def get_global_login_info(username, password, soop_cookie):
         getter.last_login_info = None
 
 
-def get_steam_login_info(username, password, steam_token, soop_cookie):
+def get_steam_login_info(username, password, steam_token, soop_cookie, steam_guard_type=''):
     """Authenticate Steam into KRAFTON, then attach the selected SOOP account."""
     from global_login import krafton_pure_http_login as krafton_login
     from global_login import steam_kid_login
@@ -979,7 +981,9 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
         try:
             proxy_host = proxy.rsplit('@', 1)[-1].rsplit('://', 1)[-1] if proxy else 'direct'
             logger.info('Steam proxy attempt host=%s', proxy_host)
-            session, steam_info = steam_kid_login.login_steam_to_kid_session(username, password, steam_token, proxy)
+            session, steam_info = steam_kid_login.login_steam_to_kid_session(
+                username, password, steam_token, proxy, steam_guard_type,
+            )
             break
         except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as exc:
             last_proxy_error = exc
@@ -1052,6 +1056,7 @@ def finish_steam_qr_login(qr_session):
 def process_steam_qr_claim(qr_session, steam_info):
     """在扫码确认后异步完成 KID/SOOP 领取，避免阻塞二维码状态响应。"""
     try:
+        claim_started_at = time.monotonic()
         from global_login import steam_kid_login
         steam_info = steam_kid_login.complete_steam_qr_login(
             qr_session['session'], qr_session['steam_state'], steam_info['poll_response'],
@@ -1066,7 +1071,9 @@ def process_steam_qr_claim(qr_session, steam_info):
                 qr_session['terminal_message'] = '该激活码正在领取中或已使用。'
             return
         try:
-            _, reward, _ = claim_soop_stock(qr_session['inventory'], claim_cookie=claim_cookie)
+            _, reward, _ = claim_soop_stock(
+                qr_session['inventory'], claim_cookie=claim_cookie,
+            )
         except NoClaimableSoopRewardError:
             release_global_code_reservation(qr_session['code'], claim_token)
             with qr_session['lock']:
@@ -1082,7 +1089,10 @@ def process_steam_qr_claim(qr_session, steam_info):
             return
         steamid = steam_info.get('steamid') or 'Steam 扫码用户'
         try:
-            completed = complete_global_code_claim(qr_session['code'], claim_token, steamid, reward)
+            completed = complete_global_code_claim(
+                qr_session['code'], claim_token, steamid, reward,
+                max(0, round(time.monotonic() - claim_started_at)),
+            )
         except Exception:
             logger.exception('Activation-code completion persistence failed after Steam QR claim')
             completed = False
@@ -1161,6 +1171,18 @@ def ensure_inventory_schema():
             cursor.execute("SHOW COLUMNS FROM activation_claims LIKE 'claimed_item_code_idxs'")
             if cursor.fetchone():
                 cursor.execute('ALTER TABLE activation_claims DROP COLUMN claimed_item_code_idxs')
+            cursor.execute("SHOW COLUMNS FROM activation_claims LIKE 'claim_duration_seconds'")
+            if not cursor.fetchone():
+                cursor.execute('ALTER TABLE activation_claims ADD COLUMN claim_duration_seconds INT UNSIGNED NULL AFTER product_name')
+            cursor.execute(
+                'UPDATE activation_claims claim '
+                'LEFT JOIN activation_codes code ON code.id = claim.activation_code_id '
+                'SET claim.claim_duration_seconds = CASE '
+                "WHEN claim.claim_account = '后台手动标记' THEN 0 "
+                'WHEN code.claim_started_at IS NOT NULL THEN GREATEST(0, TIMESTAMPDIFF(SECOND, code.claim_started_at, claim.claimed_at)) '
+                'ELSE NULL END '
+                'WHERE claim.claim_duration_seconds IS NULL'
+            )
     finally:
         connection.close()
 
@@ -1317,7 +1339,7 @@ def release_global_code_reservation(code, claim_token):
         connection.close()
 
 
-def complete_global_code_claim(code, claim_token, claim_account, product_name):
+def complete_global_code_claim(code, claim_token, claim_account, product_name, claim_duration_seconds=None):
     """Persist a completed claim; a failure leaves the durable reservation in processing."""
     if pymysql is None or not GLOBAL_CODE_DB_CONFIG['password']:
         raise RuntimeError("全球激活码数据库未配置。")
@@ -1333,10 +1355,10 @@ def complete_global_code_claim(code, claim_token, claim_account, product_name):
             if completed:
                 cursor.execute(
                     'INSERT INTO activation_claims '
-                    '(activation_code_id, activation_code, claim_account, claim_password, product_name, claimed_at) '
-                    'SELECT id, code, %s, %s, %s, UTC_TIMESTAMP() '
+                    '(activation_code_id, activation_code, claim_account, claim_password, product_name, claim_duration_seconds, claimed_at) '
+                    'SELECT id, code, %s, %s, %s, %s, UTC_TIMESTAMP() '
                     'FROM activation_codes WHERE code = %s',
-                    (claim_account, '', product_name or '', code),
+                    (claim_account, '', product_name or '', claim_duration_seconds, code),
                 )
         connection.commit()
         return completed
@@ -1489,9 +1511,9 @@ class Handler(BaseHTTPRequestHandler):
                 total, rows = get_admin_claims(page, page_size, search)
                 claims = [{
                     'id': row[0], 'activation_code': row[1], 'claim_account': row[2],
-                    'product_name': row[3],
-                    'claimed_at': row[4].strftime('%Y-%m-%d %H:%M:%S') if row[4] else None,
-                    'soop_account_name': row[5],
+                    'product_name': row[3], 'created_by': row[4],
+                    'claimed_at': row[5].strftime('%Y-%m-%d %H:%M:%S') if row[5] else None,
+                    'soop_account_name': row[6], 'claim_duration_seconds': row[7],
                 } for row in rows]
                 return self.send_json({'claims': claims, 'page': page, 'page_size': page_size, 'total': total, 'search': search})
             except ValueError as exc:
@@ -1838,6 +1860,7 @@ class Handler(BaseHTTPRequestHandler):
                 logger.exception('Steam QR creation failed')
                 return self.send_json({'message': 'Steam 扫码二维码创建失败，请稍后重试。'}, 503)
         if path not in ('/api/redeem', '/api/redeem/global'): return self.send_json({'message': '接口不存在。'}, 404)
+        redemption_started_at = time.monotonic()
         if path == '/api/redeem':
             try:
                 if not get_feature_config(is_loopback_request(self.headers))['steam']:
@@ -1882,6 +1905,9 @@ class Handler(BaseHTTPRequestHandler):
             username = str(data.get('steam_user', '')).strip()
             password = str(data.get('steam_password', ''))
             steam_token = str(data.get('steam_token', '')).strip()
+            steam_guard_type = str(data.get('steam_guard_type', '')).strip().lower()
+            if steam_guard_type not in ('', 'email'):
+                return self.send_json({'message': 'Steam 验证方式无效。'}, 400)
             if not username or not password:
                 return self.send_json({'message': '请填写完整的激活码、Steam 账号和密码。'}, 400)
             trace_context = redemption_trace_context(code, username)
@@ -1937,7 +1963,7 @@ class Handler(BaseHTTPRequestHandler):
                         }, 503)
                     login_info = get_global_login_info(username, password, inventory[1])
                 else:
-                    login_info = get_steam_login_info(username, password, steam_token, inventory[1])
+                    login_info = get_steam_login_info(username, password, steam_token, inventory[1], steam_guard_type)
             except ValueError as exc:
                 if path == '/api/redeem':
                     return self.send_json({'message': str(exc)}, 400)
@@ -1973,6 +1999,8 @@ class Handler(BaseHTTPRequestHandler):
                     response = {'message': message}
                     if steam_guard_required:
                         response['steam_guard_required'] = True
+                        if '邮箱验证码' in message:
+                            response['steam_guard_type'] = 'email'
                     return self.send_json(response, status)
                 log_business_error(f'Global login service failed {trace_context}', exc_info=True)
                 return self.send_json({'message': global_login_failure_message(exc)}, 503)
@@ -2035,6 +2063,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 claimed = complete_global_code_claim(
                     code, claim_token, username, reward,
+                    max(0, round(time.monotonic() - redemption_started_at)),
                 )
             except Exception:
                 logger.exception('Activation-code completion failed after SOOP claim %s', trace_context)

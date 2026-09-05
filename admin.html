@@ -56,7 +56,7 @@
 
           <section id="inventory-view" class="admin-page" hidden>
               <section class="admin-card inventory-card">
-          <div class="panel-title"><h1>库存与激活码</h1><div class="panel-tools"><input id="inventory-search" class="layui-input search-input" placeholder="搜索商品、账号、激活码、录入人"><button id="inventory-search-button" class="layui-btn" type="button">搜索</button><button id="refresh" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
+          <div class="panel-title"><h1>库存与激活码</h1><div class="panel-tools"><input id="inventory-search" class="layui-input search-input" placeholder="搜索商品、账号、激活码、录入人"><button id="inventory-search-button" class="layui-btn" type="button">搜索</button><button id="clear-inventory-search" class="layui-btn layui-btn-primary" type="button">清除</button><button id="refresh" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
           <div class="table-wrap">
             <table class="inventory-table">
               <thead><tr><th>ID</th><th>商品</th><th>SOOP 账号</th><th>录入人</th><th>录入时间</th><th>激活码</th><th>状态</th><th>操作</th></tr></thead>
@@ -70,10 +70,10 @@
 
           <section id="claims-view" class="admin-page" hidden>
             <section class="admin-card claims-card">
-          <div class="panel-title"><h1>领取记录</h1><div class="panel-tools"><input id="claims-search" class="layui-input search-input" placeholder="搜索激活码、领取账号、商品"><button id="claims-search-button" class="layui-btn" type="button">搜索</button><button id="refresh-claims" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
+          <div class="panel-title"><h1>领取记录</h1><div class="panel-tools"><input id="claims-search" class="layui-input search-input" placeholder="搜索激活码、领取账号、商品、录入人"><button id="claims-search-button" class="layui-btn" type="button">搜索</button><button id="clear-claims-search" class="layui-btn layui-btn-primary" type="button">清除</button><button id="refresh-claims" class="layui-btn layui-btn-primary" type="button">刷新</button></div></div>
           <div class="table-wrap">
             <table class="inventory-table">
-              <thead><tr><th>ID</th><th>激活码</th><th>领取账号</th><th>商品</th><th>SOOP 账号</th><th>领取时间</th></tr></thead>
+              <thead><tr><th>ID</th><th>激活码</th><th>领取账号</th><th>商品</th><th>录入人</th><th>SOOP 账号</th><th>领取耗时</th><th>领取时间</th></tr></thead>
               <tbody id="claims-body"></tbody>
             </table>
           </div>
