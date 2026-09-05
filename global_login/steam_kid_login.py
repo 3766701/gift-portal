@@ -1671,8 +1671,10 @@ def login_steam_to_kid_session(
         save_steam_refresh_token = lambda _token: None
         try:
             with contextlib.redirect_stdout(io.StringIO()):
+                # Steam login does not need KID/Akamai bootstrap telemetry.
+                # Keep the session HTTP-only; domain routing still sends only
+                # Steam hosts through Mihomo.
                 session = make_session(proxy)
-                prewarm_akamai_like_pubg_cookie(session, proxy=None)
                 oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
                 steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
                 login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)

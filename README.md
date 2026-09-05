@@ -13,7 +13,7 @@ python server.py
 
 `/gift` 是唯一可访问的应用路径；未带此前缀的页面和 API 会返回 `404`。接口使用 `/gift/api/...`。
 
-Steam 提货的 KID 登录只对 Steam 域名使用本机 Mihomo/Clash HTTP 代理 `http://127.0.0.1:7890`，KRAFTON、SOOP 和其他域名直连；不读取代理环境变量，也不使用 QG 代理。请先启动本机 Mihomo 并监听该端口。
+Steam 提货登录只对 Steam 域名使用本机 Mihomo/Clash HTTP 代理 `http://127.0.0.1:7890`，KRAFTON、SOOP 和其他域名直连；Steam 登录入口不执行 KID/Akamai Cookie 初始化，也不启动 Playwright telemetry。全球 KID 登录保持原有独立流程。不读取代理环境变量，也不使用 QG 代理。请先启动本机 Mihomo 并监听该端口。
 
 服务器上的 Mihomo 可通过 `external-controller: 127.0.0.1:9090` 提供节点控制 API；`secret: ''` 表示空密钥，项目会直接访问该 API。启动时项目会读取 `/root/.config/mihomo/config.yaml`（也支持 `$XDG_CONFIG_HOME/mihomo/config.yaml`），获取代理组节点并测速，随后通过 `PUT /proxies/<代理组>` 切换节点。遇到网络错误、403、429 或 Steam 限流时会切换节点并重试，最多 3 次。项目和 Mihomo 必须运行在同一台服务器上，因为 `127.0.0.1` 只指向本机。
 
