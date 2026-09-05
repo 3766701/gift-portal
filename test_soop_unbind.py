@@ -81,6 +81,29 @@ class SoopUnbindTests(unittest.TestCase):
             server.global_login_failure_message('stage=krafton_login detail_stage=password_login'),
             '全球账号登录失败，请确认账号、密码及账号状态后重试。',
         )
+        self.assertEqual(
+            server.global_login_failure_message('stage=krafton_login detail_stage=password_login_retry'),
+            '全球账号登录失败，请确认账号、密码及账号状态后重试。',
+        )
+        self.assertEqual(
+            server.global_login_failure_message('stage=akamai_seed http_status=400 error_code=26'),
+            '全球账号登录失败，请确认账号、密码及账号状态后重试。',
+        )
+        self.assertEqual(
+            server.global_login_failure_message('stage=akamai_seed http_status=400 error_code=2'),
+            '全球账号登录失败，请确认账号、密码及账号状态后重试。',
+        )
+        self.assertEqual(
+            server.global_login_failure_message('stage=krafton_login http_status=404'),
+            '无法找到使用该电子邮箱的账号。',
+        )
+        self.assertEqual(
+            server.global_login_failure_message(
+                'stage=akamai_seed http_status=400 error_code=2 '
+                'login_error=login-need-to-verify-mfa'
+            ),
+            '已设置双因素验证。请关闭双因素验证。',
+        )
 
     def test_redemption_trace_context_masks_code_and_account(self):
         self.assertEqual(

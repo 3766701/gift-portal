@@ -50,6 +50,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 SOOP_INVENTORY_COOKIE_EXPIRED_MESSAGE = "SOOP 库存账号登录状态已过期，请在后台更新该库存账号的登录信息后重试。"
 
+# 在启动 seed 池之前完成文件日志配置，确保初始化阶段的事件也落盘。
+kid.initialize_abck_pool(
+    proxy=os.environ.get("KRAFTON_RISKBYPASS_PROXY")
+    or os.environ.get("PUBG_RISKBYPASS_PROXY")
+    or os.environ.get("KRAFTON_HTTP_PROXY")
+    or os.environ.get("PUBG_HTTP_PROXY"),
+    count=5,
+)
+
 
 def profile_has_soop_authentication(profile_body: Any) -> bool:
     """Return whether the documented profile authentication list contains SOOP."""
@@ -385,7 +394,7 @@ class _AbckPool:
                 sensor_backend=cls._browser_seed_backend,
                 sync_akamai_cookies=True,
             )
-            for name in ("_abck", "bm_sz", "ak_bmsc"):
+            for name in ("_abck", "bm_sz", "ak_bmsc", "bm_sv", "bm_mi"):
                 val = s.cookies.get(name)
                 if val:
                     akamai_cookies[name] = val
@@ -766,12 +775,12 @@ class PUBGCookieGetter:
 
     @classmethod
     def get_abck_pool_status(cls) -> Dict[str, Any]:
-        return _AbckPool.status()
+        return kid._AbckPool.status()
 
     @classmethod
     def refresh_abck_seed(cls, proxy: Optional[str] = None) -> Dict[str, Any]:
-        _AbckPool.get_seed(proxy=proxy, force_refresh=True)
-        return _AbckPool.status()
+        kid.initialize_abck_pool(proxy=proxy, count=5)
+        return kid._AbckPool.status()
 
     # ------------------------- HTTP login/token flow -------------------------
     def _make_seeded_session(self, seed: Any) -> requests.Session:
@@ -779,7 +788,7 @@ class PUBGCookieGetter:
         # 优先恢复完整 Akamai cookie，兼容只传入 _abck 的旧调用方式。
         if isinstance(seed, dict):
             cookies = seed.get("akamai_cookies") if isinstance(seed.get("akamai_cookies"), dict) else seed
-            for name in ("_abck", "bm_sz", "ak_bmsc"):
+            for name in ("_abck", "bm_sz", "ak_bmsc", "bm_sv", "bm_mi"):
                 val = cookies.get(name) if isinstance(cookies, dict) else None
                 if val:
                     s.cookies.set(name, val, domain=".krafton.com", path="/", secure=True)
@@ -909,27 +918,33 @@ class PUBGCookieGetter:
         akamai_js_found = False
         seed_cookie_names: list[str] = []
         try:
-            seed_entry = _AbckPool.get_seed_entry(proxy=self.http_proxy)
-            seed_source = str(seed_entry.get("seed_source") or "unknown")
-            seed_abck = str(seed_entry.get("abck") or "")
-            akamai_js_url = str(seed_entry.get("akamai_js_url") or "")
+            # KRAFTON 登录统一由新版 kid 编排：账号路径只从全局 _AbckPool
+            # 领取 seed，RiskByPass 由启动/后台补种负责。
+            kid_context = kid.login_credentials(username, password)
+            s = kid_context["session"]
+            seed_abck = str(s.cookies.get("_abck") or "")
+            akamai_js_url = str(kid_context.get("akamai_js_url") or "")
             akamai_js_found = bool(akamai_js_url)
-            s = self._make_seeded_session(seed_entry)
-            initial_cookies = [c.name for c in s.cookies]
+            seed_source = "riskbypass_pool" if seed_abck else "unavailable"
+            try:
+                initial_cookies = [c.name for c in (getattr(s.cookies, "jar", None) or s.cookies)]
+            except Exception:
+                initial_cookies = list(getattr(s.cookies, "keys", lambda: [])())
             seed_cookie_names = initial_cookies
-            logger.info("%s----HTTP 开始获取 Authorization，seed_source=%s seed_abck=%s...", user_tag, seed_entry.get("seed_source"), seed_abck[:12])
+            logger.info("%s----HTTP 开始获取 Authorization，seed_source=%s seed_abck=%s...", user_tag, seed_source, seed_abck[:12])
 
             stage = "krafton_login"
-            self._last_kid_login_trace = {}
-            kid_trace = self._login_krafton(
-                s,
-                username,
-                password,
-                akamai_js_url,
-                soop_cookie=soop_cookie,
-                gui_instance=gui_instance,
-                display_name=display_name,
-            )
+            kid_trace = {
+                "login_status": kid_context["login_response"].status_code,
+                "profile_status": kid_context["profile_response"].status_code,
+                "challenge_count": kid_context.get("challenge_count", 0),
+            }
+            if soop_cookie:
+                pbody = kid.try_json(kid_context["profile_response"])
+                kid_trace["soop_unbound"] = unbind_soop_if_linked(s, pbody)
+                bind_soop_to_session(s, soop_cookie, trace=kid_trace)
+                kid_trace["soop_bound"] = True
+                kid_trace["soop_claim_cookie"] = soop_cookie_from_session(s, soop_cookie)
 
             if not require_game_authorization:
                 soop_claim_cookie = kid_trace.pop("soop_claim_cookie", "")
@@ -1005,7 +1020,7 @@ class PUBGCookieGetter:
                     "initial_cookies": initial_cookies,
                     "final_abck_len": len(s.cookies.get("_abck") or ""),
                     "final_abck_same_as_seed": (s.cookies.get("_abck") or "") == seed_abck,
-                    "pool": _AbckPool.status(),
+                    "pool": kid._AbckPool.status(),
                 },
                 "elapsed_s": round(time.time() - start, 2),
             }
@@ -1025,6 +1040,15 @@ class PUBGCookieGetter:
                 if not key.endswith("_body")
             }
             detail_stage = safe_kid_trace.get("detail_stage")
+            # login_credentials() owns the current KRAFTON flow and may raise
+            # before this getter's trace is populated. Preserve the stage so
+            # the API can map bad credentials to the specific user message.
+            if not detail_stage and stage == "krafton_login" and (
+                "KRAFTON 登录失败 HTTP" in error_text
+                or "KRAFTON 登录失败" in error_text
+            ):
+                detail_stage = "password_login"
+                safe_kid_trace["detail_stage"] = detail_stage
             logger.error(
                 "%s----Authorization failed stage=%s detail_stage=%s trace=%s error=%s",
                 user_tag, stage, detail_stage or "-", safe_kid_trace, error_text,
@@ -1124,4 +1148,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,12 +25,93 @@ except ImportError:
 
 ROOT = Path(__file__).parent
 LOG_PATH = ROOT / 'gift_portal.log'
+LOGIN_RUNTIME_LOG_PATH = ROOT / 'login_runtime.log'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[logging.FileHandler(LOG_PATH, encoding='utf-8'), logging.StreamHandler()],
 )
 logger = logging.getLogger('gift_portal')
+
+
+class LoginRuntimeTee:
+    """Mirror console output into one redacted, timestamped login runtime log."""
+
+    _SECRET_PATTERNS = (
+        re.compile(r'(?i)(password|passwd|pwd)\s*[=:]\s*[^\s,;\'"}]+'),
+        re.compile(r'(?i)(authorization|bearer|token|cookie|_abck|ak_bmsc|bm_sz)\s*[=:]\s*[^\s,;\'"}]+'),
+        re.compile(r'(?i)(https?://)([^\s/@:]+):([^\s/@]+)@'),
+    )
+
+    def __init__(self, original_stream, log_path):
+        self._original_stream = original_stream
+        self._log_path = log_path
+        self._lock = threading.Lock()
+        self._pending_by_thread = {}
+
+    @property
+    def encoding(self):
+        return getattr(self._original_stream, 'encoding', 'utf-8')
+
+    def isatty(self):
+        return self._original_stream.isatty()
+
+    def fileno(self):
+        return self._original_stream.fileno()
+
+    @classmethod
+    def redact(cls, line):
+        redacted = line
+        for pattern in cls._SECRET_PATTERNS[:2]:
+            redacted = pattern.sub(lambda match: f'{match.group(1)}=[REDACTED]', redacted)
+        return cls._SECRET_PATTERNS[2].sub(r'\1[REDACTED]:[REDACTED]@', redacted)
+
+    def _write_runtime_line(self, line):
+        if not line:
+            return
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with self._log_path.open('a', encoding='utf-8') as stream:
+            stream.write(f'{timestamp} {self.redact(line)}\n')
+
+    def write(self, text):
+        if not text:
+            return 0
+        self._original_stream.write(text)
+        thread_id = threading.get_ident()
+        with self._lock:
+            pending = self._pending_by_thread.get(thread_id, '') + text
+            lines = pending.splitlines(keepends=True)
+            self._pending_by_thread[thread_id] = ''
+            for line in lines:
+                if line.endswith(('\n', '\r')):
+                    self._write_runtime_line(line.rstrip('\r\n'))
+                else:
+                    self._pending_by_thread[thread_id] = line
+        return len(text)
+
+    def flush(self):
+        self._original_stream.flush()
+        thread_id = threading.get_ident()
+        with self._lock:
+            pending = self._pending_by_thread.pop(thread_id, '')
+            if pending:
+                self._write_runtime_line(pending)
+
+
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+sys.stdout = LoginRuntimeTee(_ORIGINAL_STDOUT, LOGIN_RUNTIME_LOG_PATH)
+sys.stderr = LoginRuntimeTee(_ORIGINAL_STDERR, LOGIN_RUNTIME_LOG_PATH)
+
+
+class RedactingRuntimeFormatter(logging.Formatter):
+    def format(self, record):
+        return LoginRuntimeTee.redact(super().format(record))
+
+
+_login_runtime_handler = logging.FileHandler(LOGIN_RUNTIME_LOG_PATH, encoding='utf-8')
+_login_runtime_handler.setFormatter(RedactingRuntimeFormatter('%(asctime)s %(levelname)s %(message)s'))
+logging.getLogger().addHandler(_login_runtime_handler)
 GLOBAL_LOGIN_GETTER_CLASS = None
 GLOBAL_LOGIN_IMPORT_LOCK = threading.Lock()
 EMAIL_PATTERN = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
@@ -199,17 +281,35 @@ def summarize_global_login_error(error, stage_hint='', detail_stage=''):
         details.append(f'http_status={status.group(1)}')
     if error_code:
         details.append(f'error_code={error_code.group(1)}')
+    if 'error.login-need-to-verify-mfa' in text:
+        details.append('login_error=login-need-to-verify-mfa')
     return ' '.join(details)
 
 
 def global_login_failure_message(error):
     """Return a user-safe, actionable message for the recorded login sub-stage."""
     text = str(error or '')
+    if 'SOOP 库存账号登录状态已过期' in text:
+        return 'SOOP 库存账号已过期。'
+    if 'login_error=login-need-to-verify-mfa' in text or 'error.login-need-to-verify-mfa' in text:
+        return '已设置双因素验证。请关闭双因素验证。'
+    if re.search(r'(?i)(?:^|\s)http_status\s*=\s*404(?:\s|$)', text):
+        return '无法找到使用该电子邮箱的账号。'
+    if re.search(r'(?i)error[_]?code\s*[=:]\s*176(?:\s|$)', text) or re.search(
+        r"['\"]errorCode['\"]\s*:\s*176(?:\s|$)", text,
+    ):
+        return '您输入的是近期更改过的旧密码。'
+    # KRAFTON returns errorCode 2/26 for rejected email/password logins.
+    if re.search(r'(?i)error[_]?code\s*[=:]\s*(?:2|26)(?!\d)', text) or re.search(
+        r"['\"]errorCode['\"]\s*:\s*(?:2|26)(?!\d)", text,
+    ):
+        return '全球账号登录失败，请确认账号、密码及账号状态后重试。'
     if 'detail_stage=bootstrap' in text:
         return '全球账号登录初始化失败，请稍后重试。'
     if 'detail_stage=akamai_sec_cpt' in text:
         return '全球账号安全验证失败，请稍后重试。'
-    if 'detail_stage=password_login' in text:
+    # 登录首次尝试和完成 sec-cpt 后的密码重试都属于账号密码阶段。
+    if 'detail_stage=password_login' in text or 'detail_stage=password_login_retry' in text:
         return '全球账号登录失败，请确认账号、密码及账号状态后重试。'
     if 'detail_stage=profile_before_soop' in text:
         return '全球账号登录会话验证失败，请稍后重试。'
@@ -609,6 +709,9 @@ def get_global_login_info(username, password, soop_cookie):
         if login_info:
             return login_info
         failure = getter.get_last_login_info() or {}
+        failure_error = str(failure.get('error') or '')
+        if 'SOOP 库存账号登录状态已过期' in failure_error:
+            raise GlobalLoginError(failure_error)
         logger.error(
             'Global login diagnostic stage=%s detail_stage=%s error=%s elapsed_s=%s',
             failure.get('stage', 'unknown'),
@@ -1202,6 +1305,8 @@ class Handler(BaseHTTPRequestHandler):
                     'SOOP 库存账号登录状态已过期，请在后台更新该库存账号的登录信息后重试。',
                 ):
                     log_business_error(f'SOOP binding failed before global redemption {trace_context}', exc_info=True)
+                    if 'SOOP 库存账号登录状态已过期' in str(exc):
+                        return self.send_json({'message': 'SOOP 库存账号已过期。'}, 502)
                     return self.send_json({'message': str(exc)}, 502)
                 if path == '/api/redeem':
                     message, status, steam_guard_required = steam_login_failure_response(exc)
@@ -1308,6 +1413,18 @@ if __name__ == '__main__':
         logger.addHandler(database_log_handler)
     except Exception:
         logger.exception('System log table initialization failed')
+    # Warm the shared RiskByPass seed pool when the service starts.  The
+    # global getter is otherwise lazy-loaded on the first redemption request.
+    try:
+        from global_login import krafton_pure_http_login as krafton_login
+        seed_proxy = (
+            os.environ.get('KRAFTON_RISKBYPASS_PROXY')
+            or os.environ.get('PUBG_RISKBYPASS_PROXY')
+        )
+        logger.info('[riskbypass-pool] 服务启动，调度 seed 初始化 count=5')
+        krafton_login.initialize_abck_pool(proxy=seed_proxy, count=5)
+    except Exception:
+        logger.exception('[riskbypass-pool] 服务启动初始化调度失败')
     port = int(os.environ.get('GIFT_PORTAL_PORT', '8000'))
     logger.info('DROP//ZONE running at http://127.0.0.1:%s', port)
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
