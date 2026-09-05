@@ -739,7 +739,17 @@ def get_steam_login_info(username, password, steam_token, soop_cookie):
         unbind_soop_if_linked,
     )
 
-    fallback_proxy = os.environ.get('GIFT_PORTAL_HTTP_PROXY') or None
+    # Prefer the portal-specific setting, then honor standard proxy
+    # environment variables so local Mihomo/Clash works without extra
+    # application-specific configuration.
+    fallback_proxy = (
+        os.environ.get('GIFT_PORTAL_HTTP_PROXY')
+        or os.environ.get('HTTPS_PROXY')
+        or os.environ.get('https_proxy')
+        or os.environ.get('HTTP_PROXY')
+        or os.environ.get('http_proxy')
+        or None
+    )
     proxies = [fallback_proxy]
     qg_selected = False
     if os.environ.get('GIFT_PORTAL_QG_PROXY_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}:
