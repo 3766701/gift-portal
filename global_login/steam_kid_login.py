@@ -390,7 +390,9 @@ def prewarm_akamai_like_pubg_cookie(s: requests.Session, proxy: str | None = Non
             target_url=login_url,
             referer=login_url,
             label="steam_oidc_seed_prelogin",
-            session_proxy=proxy,
+            # Akamai/KRAFTON telemetry stays direct; only Steam hosts use the
+            # proxy through SteamScopedSession.
+            session_proxy=None,
             wait_ms=max(500, int(os.environ.get("PUBG_BROWSER_SEED_WAIT_MS", "2500"))),
             interact=True,
             sensor_backend=sensor_browser,
@@ -1276,7 +1278,6 @@ def solve_oidc_sec_cpt_like_pubg_cookie(s: requests.Session, challenge: dict[str
     kid.SENSOR_BROWSER_BACKEND = sensor_browser
     rounds = int(os.environ.get("PUBG_HTTP_SEC_CPT_ROUNDS", "80"))
     no_sensor = os.environ.get("PUBG_HTTP_NO_SENSOR_INTERLEAVE", "0") == "1"
-    proxy = os.environ.get("PUBG_HTTP_PROXY") or os.environ.get("HTTP_PROXY_URL") or None
     print(f"[sec-cpt] use pubg_cookie logic akamai_js={akamai_js_url} sensor={sensor_browser} rounds={rounds}")
     try:
         return bool(kid.solve_sec_cpt_challenge(
@@ -1285,7 +1286,7 @@ def solve_oidc_sec_cpt_like_pubg_cookie(s: requests.Session, challenge: dict[str
             max_rounds=rounds,
             sleep_first=sleep_first,
             akamai_js_url=akamai_js_url,
-            session_proxy=proxy,
+            session_proxy=None,
             sensor_interleave=not no_sensor,
             sensor_backend=sensor_browser,
             bitbrowser_profile_id=os.environ.get("BITBROWSER_PROFILE_ID") or None,
@@ -1671,7 +1672,7 @@ def login_steam_to_kid_session(
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 session = make_session(proxy)
-                prewarm_akamai_like_pubg_cookie(session, proxy=proxy)
+                prewarm_akamai_like_pubg_cookie(session, proxy=None)
                 oidc = build_pubg_oidc_start(session, pubg.PUBG_HOME, prompt="consent")
                 steam_oauth_url = get_steam_oauth_url_from_krafton(session, oidc)
                 login_page = session.get(steam_oauth_url, headers={"User-Agent": UA}, timeout=30, allow_redirects=True)
