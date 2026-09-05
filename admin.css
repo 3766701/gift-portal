@@ -81,6 +81,10 @@ body { min-height: 100vh; margin: 0; background: radial-gradient(circle at 0 0, 
 .inventory-actions .layui-btn { height: 30px; margin: 2px; padding: 0 9px; border-radius: 5px; font-size: 12px; line-height: 30px; }
 .inventory-status-btn { border-color: #bad5d2; background: #fff; color: #176d66; }
 .inventory-status-btn:hover { border-color: #65aca4; background: #edf8f6; }
+.inventory-claim-status-btn { border-color: #e5cb8b; background: #fffdf3; color: #986600; }
+.inventory-claim-status-btn:hover { border-color: #c89b36; background: #fff8df; }
+.inventory-mark-claimed-btn { border-color: #9caab0; background: #f8fafb; color: #59636d; }
+.inventory-mark-claimed-btn:hover { border-color: #697a83; background: #eff3f4; }
 .inventory-delete-btn { border-color: #e3b6b0; background: #fff; color: #b43c33; }
 .inventory-delete-btn:hover { border-color: #c96f66; background: #fff2f0; }
 .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 14px; color: #69747d; font-size: 13px; }

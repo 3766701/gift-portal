@@ -723,6 +723,81 @@ def set_soop_inventory_enabled(inventory_id, enabled):
         connection.close()
 
 
+def reset_soop_inventory_claim_status(inventory_id):
+    """Reset a completed inventory code to available and remove its claim record."""
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ac.id, ac.claim_status '
+                'FROM soop_inventory si '
+                'JOIN activation_code_inventory aci ON aci.soop_inventory_id = si.id '
+                'JOIN activation_codes ac ON ac.id = aci.activation_code_id '
+                'WHERE si.id = %s FOR UPDATE',
+                (inventory_id,),
+            )
+            activation_code = cursor.fetchone()
+            if activation_code is None:
+                raise LookupError('库存商品不存在或尚未生成激活码。')
+            activation_code_id, claim_status = activation_code
+            if claim_status == 'processing':
+                raise ValueError('领取中的库存不能修改状态，请等待领取流程结束。')
+            if claim_status != 'claimed':
+                raise ValueError('仅已领取的库存可以设为未领取。')
+            cursor.execute('DELETE FROM activation_claims WHERE activation_code_id = %s', (activation_code_id,))
+            cursor.execute(
+                "UPDATE activation_codes SET used_at = NULL, claim_status = 'available', "
+                'claim_token = NULL, claim_started_at = NULL WHERE id = %s',
+                (activation_code_id,),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def mark_soop_inventory_claimed(inventory_id):
+    """Mark an available inventory code as claimed and record the manual action."""
+    connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ac.id, ac.code, ac.claim_status, si.product_name '
+                'FROM soop_inventory si '
+                'JOIN activation_code_inventory aci ON aci.soop_inventory_id = si.id '
+                'JOIN activation_codes ac ON ac.id = aci.activation_code_id '
+                'WHERE si.id = %s FOR UPDATE',
+                (inventory_id,),
+            )
+            activation_code = cursor.fetchone()
+            if activation_code is None:
+                raise LookupError('库存商品不存在或尚未生成激活码。')
+            activation_code_id, code, claim_status, product_name = activation_code
+            if claim_status == 'processing':
+                raise ValueError('领取中的库存不能修改状态，请等待领取流程结束。')
+            if claim_status != 'available':
+                raise ValueError('仅未领取的库存可以设为已领取。')
+            cursor.execute(
+                "UPDATE activation_codes SET used_at = UTC_TIMESTAMP(), claim_status = 'claimed', "
+                'claim_token = NULL, claim_started_at = NULL WHERE id = %s',
+                (activation_code_id,),
+            )
+            cursor.execute(
+                'INSERT INTO activation_claims '
+                '(activation_code_id, activation_code, claim_account, claim_password, product_name, claimed_at) '
+                'VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())',
+                (activation_code_id, code, '后台手动标记', '', product_name),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def delete_soop_inventory(inventory_id):
     """Delete inventory and its unused activation code as one transaction."""
     connection = pymysql.connect(**GLOBAL_CODE_DB_CONFIG, autocommit=False)
@@ -1633,6 +1708,42 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception('Admin inventory status update failed')
                 return self.send_json({'message': '库存状态更新失败。'}, 503)
+        if path == '/api/admin/inventory/claim-status':
+            if not self.require_admin(): return
+            data = self.read_json()
+            try:
+                inventory_id = int((data or {}).get('inventory_id'))
+                if inventory_id <= 0: raise ValueError
+            except (TypeError, ValueError):
+                return self.send_json({'message': '库存 ID 无效。'}, 400)
+            try:
+                reset_soop_inventory_claim_status(inventory_id)
+                return self.send_json({'message': '库存已设为未领取。'})
+            except LookupError as exc:
+                return self.send_json({'message': str(exc)}, 404)
+            except ValueError as exc:
+                return self.send_json({'message': str(exc)}, 409)
+            except Exception:
+                logger.exception('Admin inventory claim-status reset failed')
+                return self.send_json({'message': '库存状态修改失败。'}, 503)
+        if path == '/api/admin/inventory/mark-claimed':
+            if not self.require_admin(): return
+            data = self.read_json()
+            try:
+                inventory_id = int((data or {}).get('inventory_id'))
+                if inventory_id <= 0: raise ValueError
+            except (TypeError, ValueError):
+                return self.send_json({'message': '库存 ID 无效。'}, 400)
+            try:
+                mark_soop_inventory_claimed(inventory_id)
+                return self.send_json({'message': '库存已设为已领取。'})
+            except LookupError as exc:
+                return self.send_json({'message': str(exc)}, 404)
+            except ValueError as exc:
+                return self.send_json({'message': str(exc)}, 409)
+            except Exception:
+                logger.exception('Admin inventory mark-claimed failed')
+                return self.send_json({'message': '库存状态修改失败。'}, 503)
         if path == '/api/admin/inventory/delete':
             if not self.require_admin(): return
             data = self.read_json()
