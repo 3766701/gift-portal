@@ -1096,41 +1096,6 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception('Admin runtime status query failed')
                 return self.send_json({'message': '运行状态查询失败。'}, 503)
-        if path == '/api/admin/runtime-settings':
-            if not self.require_admin(): return
-            data = self.read_json()
-            if not isinstance(data, dict): return self.send_json({'message': '请求参数无效。'}, 400)
-            try:
-                from global_login import krafton_pure_http_login as krafton_login
-                from global_login.vpn_switcher import get_vpn_switcher
-                proxies = data.get('seed_proxies')
-                if data.get('seed_capacity') is not None:
-                    krafton_login._AbckPool.set_capacity(int(data.get('seed_capacity')))
-                if proxies is not None:
-                    if not isinstance(proxies, list) or len(proxies) > 2 or any(not str(p).strip() for p in proxies):
-                        return self.send_json({'message': 'seed 代理最多填写两条有效地址。'}, 400)
-                    krafton_login._AbckPool.set_runtime_proxies([str(p).strip() for p in proxies])
-                switcher = get_vpn_switcher()
-                if data.get('proxy_group') is not None:
-                    group = str(data.get('proxy_group')).strip()
-                    if not group or not switcher.set_proxy_group(group):
-                        return self.send_json({'message': '代理组不存在或初始化失败。'}, 400)
-                if data.get('test_url') is not None:
-                    url = str(data.get('test_url')).strip()
-                    if not url.startswith(('http://', 'https://')):
-                        return self.send_json({'message': '测试 URL 必须以 http:// 或 https:// 开头。'}, 400)
-                    switcher.test_url = url
-                if data.get('refresh_nodes'):
-                    switcher.refresh_nodes()
-                elif data.get('switch_node'):
-                    if not switcher.switch_to_next_node():
-                        return self.send_json({'message': '没有可切换的 Clash 节点。'}, 503)
-                elif data.get('best_node'):
-                    switcher.refresh_nodes()
-                return self.send_json({'message': '运行配置已更新。'})
-            except Exception:
-                logger.exception('Admin runtime settings update failed')
-                return self.send_json({'message': '运行配置更新失败。'}, 503)
         if path == '/api/admin/inventory':
             if not self.require_admin(): return
             try:
@@ -1223,6 +1188,40 @@ class Handler(BaseHTTPRequestHandler):
         if not has_gift_prefix(self.path):
             return self.send_json({'message': '接口不存在。'}, 404)
         path = application_path(self.path)
+        if path == '/api/admin/runtime-settings':
+            if not self.require_admin(): return
+            data = self.read_json()
+            if not isinstance(data, dict): return self.send_json({'message': '请求参数无效。'}, 400)
+            try:
+                from global_login import krafton_pure_http_login as krafton_login
+                from global_login.vpn_switcher import get_vpn_switcher
+                if data.get('seed_capacity') is not None:
+                    krafton_login._AbckPool.set_capacity(int(data.get('seed_capacity')))
+                proxies = data.get('seed_proxies')
+                if proxies is not None:
+                    if not isinstance(proxies, list) or len(proxies) > 2 or any(not str(p).strip() for p in proxies):
+                        return self.send_json({'message': 'seed 代理最多填写两条有效地址。'}, 400)
+                    krafton_login._AbckPool.set_runtime_proxies([str(p).strip() for p in proxies])
+                switcher = get_vpn_switcher()
+                if data.get('proxy_group') is not None:
+                    group = str(data.get('proxy_group')).strip()
+                    if not group or not switcher.set_proxy_group(group):
+                        return self.send_json({'message': '代理组不存在或初始化失败。'}, 400)
+                if data.get('test_url') is not None:
+                    url = str(data.get('test_url')).strip()
+                    if not url.startswith(('http://', 'https://')):
+                        return self.send_json({'message': '测试 URL 必须以 http:// 或 https:// 开头。'}, 400)
+                    switcher.test_url = url
+                if data.get('refresh_nodes') or data.get('best_node'):
+                    switcher.refresh_nodes()
+                elif data.get('switch_node') and not switcher.switch_to_next_node():
+                    return self.send_json({'message': '没有可切换的 Clash 节点。'}, 503)
+                return self.send_json({'message': '运行配置已更新。'})
+            except (TypeError, ValueError):
+                return self.send_json({'message': 'Seed 池容量必须是 1 到 50 的整数。'}, 400)
+            except Exception:
+                logger.exception('Admin runtime settings update failed')
+                return self.send_json({'message': '运行配置更新失败。'}, 503)
         if path == '/api/admin/login':
             data = self.read_json()
             username = str((data or {}).get('username', '')).strip()
