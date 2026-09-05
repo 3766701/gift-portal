@@ -116,6 +116,10 @@ class DropsClient:
             if isinstance(item, dict) and item.get("itemCodeIdx") is not None
         }
 
+    def get_mission_list(self) -> dict[str, Any]:
+        """Fetch the Drops mission list, including watch-task completion state."""
+        return self._json("GET", "get_drops_mission_list.php", log_body=False)
+
     @staticmethod
     def log_inventory_preflight(item_code_idx: str | int, item: dict[str, Any]) -> None:
         logger.info(

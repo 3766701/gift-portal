@@ -32,13 +32,14 @@ const copyGeneratedCodes=async()=>{
   setMessage('inventory-message',`已复制 ${output.value.split('\n').filter(Boolean).length} 个激活码。`);
 };
 const cell=(value,className='')=>{const node=document.createElement('td');node.textContent=value||'--';if(className)node.className=className;return node;};
+const productNameCell=value=>{const node=cell(value,'product-name-cell');node.title=value||'';return node;};
 
 const renderInventory=items=>{
   const body=el('inventory-body');body.replaceChildren();
   if(!items.length){const row=document.createElement('tr');row.className='empty-row';const item=cell('暂无库存');item.colSpan=8;row.append(item);body.append(row);return;}
   items.forEach(item=>{
     const row=document.createElement('tr');
-    row.append(cell(String(item.id)),cell(item.product_name),cell(item.soop_account_name),cell(item.created_by),cell(item.created_at),cell(item.activation_code,'code-value'));
+    row.append(cell(String(item.id)),productNameCell(item.product_name),cell(item.soop_account_name),cell(item.created_by),cell(item.created_at),cell(item.activation_code,'code-value'));
     const status=!item.enabled?'已禁用':item.activation_code?(item.claim_status==='claimed'?'已领取':item.claim_status==='processing'?'领取中':'未领取'):'未生成';
     row.append(cell(status,!item.enabled?'status-disabled':`status-${item.claim_status||'available'}`));
     const action=document.createElement('td');
@@ -58,7 +59,7 @@ const renderPagination=(target,data,onChange)=>{const node=el(target),pages=Math
 const renderClaims=items=>{
   const body=el('claims-body');body.replaceChildren();
   if(!items.length){const row=document.createElement('tr');row.className='empty-row';const item=cell('暂无领取记录');item.colSpan=6;row.append(item);body.append(row);return;}
-  items.forEach(item=>{const row=document.createElement('tr');row.append(cell(String(item.id)),cell(item.activation_code,'code-value'),cell(item.claim_account),cell(item.product_name),cell(item.soop_account_name),cell(item.claimed_at));body.append(row);});
+  items.forEach(item=>{const row=document.createElement('tr');row.append(cell(String(item.id)),cell(item.activation_code,'code-value'),cell(item.claim_account),productNameCell(item.product_name),cell(item.soop_account_name),cell(item.claimed_at));body.append(row);});
 };
 
 const truncateLogMessage=value=>{

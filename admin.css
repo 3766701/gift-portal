@@ -46,6 +46,7 @@ body { min-height: 100vh; margin: 0; background: radial-gradient(circle at 0 0, 
 .table-wrap { overflow: auto; border: 1px solid #dce7e7; border-radius: 9px; }
 .inventory-table { width: 100%; min-width: 920px; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
 .inventory-table th, .inventory-table td { overflow: hidden; padding: 13px 12px; border-bottom: 1px solid #ebf0f0; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.product-name-cell { cursor: help; }
 .inventory-table th { background: #f2f8f7; color: #556b6d; font-size: 12px; font-weight: 700; letter-spacing: .15px; }
 .inventory-table tbody tr { transition: background .16s; }
 .inventory-table tbody tr:hover { background: #f7fcfb; }
