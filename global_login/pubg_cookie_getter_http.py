@@ -162,10 +162,16 @@ def soop_cookie_from_session(session: requests.Session, fallback_cookie: str) ->
     cookies by name leaks that host-only value into the Drops request and breaks
     the SOOP account context after a successful KRAFTON callback.
     """
-    request = requests.Request(
-        "POST", "https://drops.sooplive.com/api/get_drops_use_info.php",
-    ).prepare()
-    cookie_header = requests.cookies.get_cookie_header(session.cookies, request)
+    valid_domains = {"", "sooplive.com", ".sooplive.com", "drops.sooplive.com"}
+    cookie_pairs = []
+    for cookie in kid._iter_cookies(session):
+        domain = str(getattr(cookie, "domain", "")).lower()
+        if domain not in valid_domains:
+            continue
+        name = str(getattr(cookie, "name", "")).strip()
+        if name:
+            cookie_pairs.append((name, str(getattr(cookie, "value", ""))))
+    cookie_header = "; ".join(f"{name}={value}" for name, value in cookie_pairs)
     if not cookie_header:
         cookie_header = fallback_cookie
     names = sorted(name for name, _ in soop_link._cookie_items(cookie_header))
