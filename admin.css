@@ -47,10 +47,13 @@ body { margin: 0; }
 .pagination button:disabled { cursor: not-allowed; color: #b2bbc2; background: #f4f6f7; }
 .system-logs-table { min-width: 820px; }
 .runtime-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.runtime-module { margin-bottom: 28px; }
+.runtime-module h2 { margin: 0 0 14px; font-size: 16px; color: #17212b; }
 .runtime-item { min-width: 0; padding: 16px; border: 1px solid #e1e5e8; background: #f8fafb; }
 .runtime-item span { display: block; color: #68747e; font-size: 13px; margin-bottom: 8px; }
 .runtime-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17212b; font-size: 17px; }
 .runtime-settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; padding-top: 18px; border-top: 1px solid #e1e5e8; }
+.runtime-actions { display: flex; gap: 10px; margin-top: 16px; }
 .runtime-settings-form h2 { grid-column: 1 / -1; margin: 0; font-size: 16px; }
 .runtime-settings-form label { display: grid; gap: 6px; color: #59636d; font-size: 13px; }
 .runtime-settings-form > div { display: flex; gap: 8px; align-items: end; }

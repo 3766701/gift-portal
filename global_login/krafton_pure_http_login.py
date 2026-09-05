@@ -792,12 +792,19 @@ class _AbckPool:
             return {
                 "queue_size": len(cls._queue),
                 "fresh": sum(1 for e in cls._queue if int(e.get("uses", 0)) == 0),
+                "reusable": sum(1 for e in cls._queue if int(e.get("uses", 0)) > 0 and not e.get("in_use")),
                 "in_use": sum(1 for e in cls._queue if e.get("in_use")),
                 "target": cls._target,
                 "fresh_target": cls._fresh_target,
                 "ttl_s": cls._ttl_s,
                 "max_uses": cls._max_uses,
             }
+
+    @classmethod
+    def set_capacity(cls, capacity: int) -> None:
+        with cls._fill_cond:
+            cls._target = max(1, min(50, int(capacity)))
+            cls._fill_cond.notify_all()
 
     @classmethod
     def initialize_background(cls, proxy: str | None = None, count: int = 3) -> None:

@@ -403,7 +403,11 @@ class VPNSwitcher:
         if not self.available_nodes:
             return None
         count = len(self.available_nodes)
-        order = list(range(count)) if force_first else [((self.current_node_index + step) % count) for step in range(1, count + 1)]
+        if force_first:
+            # Best-line selection intentionally chooses the first node after
+            # the latest latency sort, even if it was used recently.
+            return 0
+        order = [((self.current_node_index + step) % count) for step in range(1, count + 1)]
         skipped = []
         for idx in order:
             node = self.available_nodes[idx]

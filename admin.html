@@ -98,24 +98,21 @@
           <section id="runtime-view" class="admin-page" hidden>
             <section class="admin-card runtime-card">
               <div class="panel-title"><h1>运行状态</h1><button id="refresh-runtime" class="layui-btn layui-btn-primary" type="button">刷新</button></div>
-              <div class="runtime-grid">
-                <div class="runtime-item"><span>RiskByPass 余额</span><strong id="runtime-seed-balance">--</strong></div>
+              <section class="runtime-module"><h2>Seed 模块</h2><div class="runtime-grid runtime-seed-grid">
+                <div class="runtime-item"><span>RiskByPass 余额</span><strong id="runtime-seed-balance">--</strong></div><div class="runtime-item"><span>Seed 池容量</span><strong id="runtime-seed-capacity">--</strong></div>
                 <div class="runtime-item"><span>有效 seed</span><strong id="runtime-seed-valid">--</strong></div>
                 <div class="runtime-item"><span>未使用 seed</span><strong id="runtime-seed-fresh">--</strong></div>
-                <div class="runtime-item"><span>占用中 seed</span><strong id="runtime-seed-in-use">--</strong></div>
-                <div class="runtime-item"><span>当前 Clash 节点</span><strong id="runtime-clash-node">--</strong></div>
-                <div class="runtime-item"><span>代理组</span><strong id="runtime-clash-group">--</strong></div>
-                <div class="runtime-item"><span>可用节点</span><strong id="runtime-clash-count">--</strong></div>
-                <div class="runtime-item"><span>代理入口</span><strong id="runtime-clash-proxy">--</strong></div>
-                <div class="runtime-item"><span>控制器</span><strong id="runtime-clash-controller">--</strong></div>
-              </div>
+                <div class="runtime-item"><span>占用中 seed</span><strong id="runtime-seed-in-use">--</strong></div><div class="runtime-item"><span>可复用 seed</span><strong id="runtime-seed-reusable">--</strong></div>
+              </div></section><section class="runtime-module"><h2>Clash 模块</h2><div class="runtime-grid"><div class="runtime-item"><span>代理组</span><strong id="runtime-clash-group">--</strong></div><div class="runtime-item"><span>节点数量</span><strong id="runtime-clash-count">--</strong></div><div class="runtime-item"><span>当前 Steam 代理节点</span><strong id="runtime-clash-node">--</strong></div>
+              </div><div class="runtime-actions"><button id="switch-clash-node" class="layui-btn layui-btn-primary" type="button">切换线路</button><button id="best-clash-node" class="layui-btn" type="button">最佳线路</button></div></section>
               <form id="runtime-settings-form" class="runtime-settings-form">
                 <h2>运行配置</h2>
                 <label>Seed 代理 1<input id="seed-proxy-1" class="layui-input" type="text" placeholder="http://HOST:PORT"></label>
                 <label>Seed 代理 2<input id="seed-proxy-2" class="layui-input" type="text" placeholder="http://USER:PASSWORD@HOST:PORT"></label>
+                <label>Seed 池容量<input id="seed-capacity" class="layui-input" type="number" min="1" max="50" step="1"></label>
                 <label>代理组<input id="clash-proxy-group" class="layui-input" type="text" placeholder="🔰国外流量"></label>
                 <label>测速 URL<input id="clash-test-url" class="layui-input" type="url" placeholder="https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1/"></label>
-                <div><button class="layui-btn" type="submit">保存配置</button><button id="refresh-clash-nodes" class="layui-btn layui-btn-primary" type="button">重新测速节点</button></div>
+                <div><button class="layui-btn" type="submit">保存配置</button></div>
               </form>
               <p id="runtime-message" class="form-message"></p>
             </section>

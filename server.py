@@ -1079,7 +1079,8 @@ class Handler(BaseHTTPRequestHandler):
                         'valid': seed_status.get('queue_size', 0),
                         'fresh': seed_status.get('fresh', 0),
                         'in_use': seed_status.get('in_use', 0),
-                        'target': seed_status.get('target', 0),
+                        'reusable': seed_status.get('reusable', 0),
+                        'capacity': seed_status.get('target', 0),
                         'proxies': krafton_login._AbckPool.runtime_proxies(),
                         'balance': balance,
                         'balance_error': balance_error,
@@ -1089,8 +1090,6 @@ class Handler(BaseHTTPRequestHandler):
                         'group': switcher.get_proxy_group(),
                         'node': switcher.get_current_node(),
                         'available_nodes': switcher.get_available_nodes_count(),
-                        'proxy': switcher.proxies.get('http'),
-                        'controller': switcher.clash_api,
                         'test_url': switcher.test_url,
                     },
                 })
@@ -1105,6 +1104,8 @@ class Handler(BaseHTTPRequestHandler):
                 from global_login import krafton_pure_http_login as krafton_login
                 from global_login.vpn_switcher import get_vpn_switcher
                 proxies = data.get('seed_proxies')
+                if data.get('seed_capacity') is not None:
+                    krafton_login._AbckPool.set_capacity(int(data.get('seed_capacity')))
                 if proxies is not None:
                     if not isinstance(proxies, list) or len(proxies) > 2 or any(not str(p).strip() for p in proxies):
                         return self.send_json({'message': 'seed 代理最多填写两条有效地址。'}, 400)
@@ -1120,6 +1121,11 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({'message': '测试 URL 必须以 http:// 或 https:// 开头。'}, 400)
                     switcher.test_url = url
                 if data.get('refresh_nodes'):
+                    switcher.refresh_nodes()
+                elif data.get('switch_node'):
+                    if not switcher.switch_to_next_node():
+                        return self.send_json({'message': '没有可切换的 Clash 节点。'}, 503)
+                elif data.get('best_node'):
                     switcher.refresh_nodes()
                 return self.send_json({'message': '运行配置已更新。'})
             except Exception:
