@@ -51,6 +51,9 @@ except Exception as e:  # pragma: no cover
     raise SystemExit(f"[!] 需要 curl_cffi(带指纹 HTTP): pip install -U curl_cffi ({e})")
 
 BASE = "https://accounts.krafton.com"
+# Repository fallback used when the service environment does not define the
+# RiskByPass token. Override with PUBG_RISKBYPASS_TOKEN when needed.
+RISKBYPASS_TOKEN_FALLBACK = "3766701@qq.com_R4zI0soqmiaBKcx2hC5th0tb4RDMUbD2"
 # RiskByPass 服务端要求 payload.proxy 为有效字符串；本机请求链仍可直连。
 DEFAULT_RISKBYPASS_PROXY = "http://42.96.18.62:1311"
 DEFAULT_RISKBYPASS_PROXIES = (
@@ -317,22 +320,36 @@ def is_valid_abck(value: str | None) -> bool:
 
 
 def load_riskbypass_token() -> str | None:
-    """riskbypass token:优先 env,其次读 pubg_cookie/abck.py 的 TOKEN。"""
+    """riskbypass token:优先环境变量，其次仓库内置值，再查外部文件。"""
     tok = os.environ.get("PUBG_RISKBYPASS_TOKEN")
     if tok:
         print(f"[riskbypass-token] 来源=env PUBG_RISKBYPASS_TOKEN token={tok[:24]}...")
         return tok.strip()
+    if RISKBYPASS_TOKEN_FALLBACK:
+        print(f"[riskbypass-token] 来源=repository fallback token={RISKBYPASS_TOKEN_FALLBACK[:24]}...")
+        return RISKBYPASS_TOKEN_FALLBACK
+    # This module lives in gift-portal/global_login; also search project
+    # parents so starting the server from another working directory does not
+    # change token discovery.
     candidates = [
         ROOT / "pubg_cookie" / "abck.py",
+        ROOT.parent / "pubg_cookie" / "abck.py",
+        ROOT.parent.parent / "pubg_cookie" / "abck.py",
         Path(r"E:\QQfile\pubg_cookie\abck.py"),
         Path(r"E:\QQfile\abck.py"),
     ]
+    seen: set[str] = set()
     for path in candidates:
+        path = path.resolve()
+        if str(path) in seen:
+            continue
+        seen.add(str(path))
         if path.exists():
-            m = re.search(r'TOKEN\s*=\s*"([^"]+)"', path.read_text(encoding="utf-8", errors="ignore"))
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            m = re.search(r"^\s*TOKEN\s*=\s*(['\"])([^'\"]+)\1", text, re.MULTILINE)
             if m:
-                print(f"[riskbypass-token] 来源={path} token={m.group(1)[:24]}...")
-                return m.group(1)
+                print(f"[riskbypass-token] 来源={path} token={m.group(2)[:24]}...")
+                return m.group(2).strip()
     return None
 
 
