@@ -92,6 +92,10 @@ class VPNSwitcher:
                 # Windows常见路径
                 os.path.join(os.environ.get('USERPROFILE', ''), '.config', 'clash', 'config.yaml'),
                 os.path.join(os.environ.get('APPDATA', ''), 'clash', 'config.yaml'),
+                # Mihomo on Linux (including root deployments)
+                os.path.join(os.environ.get('XDG_CONFIG_HOME', ''), 'mihomo', 'config.yaml'),
+                os.path.expanduser('~/.config/mihomo/config.yaml'),
+                os.path.expanduser('~/.config/clash/config.yaml'),
                 # 当前目录
                 'config.yaml',
                 'clash_config.yaml'
@@ -127,10 +131,12 @@ class VPNSwitcher:
                         else:
                             self.clash_secret = ""
                         
-                        # 解析port（HTTP代理端口）
+                        # 解析 HTTP 代理端口；Mihomo commonly uses mixed-port.
+                        port_keys = ('mixed-port:', 'port:', 'http-port:')
                         for line in content.split('\n'):
                             line = line.strip()
-                            if line.startswith('port:'):
+                            port_key = next((key for key in port_keys if line.startswith(key)), None)
+                            if port_key:
                                 try:
                                     port = int(line.split(':', 1)[1].strip())
                                     self.proxy_port = port
@@ -247,14 +253,16 @@ class VPNSwitcher:
             
             # 检查代理组是否存在
             if self.proxy_group not in data["proxies"]:
-                # 尝试使用备用代理组SSRDOG
-                backup_proxy_group = "SSRDOG"
-                if backup_proxy_group in data["proxies"]:
-                    logging.warning(f"代理组 '{self.proxy_group}' 不存在，使用备用代理组 '{backup_proxy_group}'")
-                    self.proxy_group = backup_proxy_group
-                else:
-                    logging.error(f"代理组 '{self.proxy_group}' 和备用代理组 '{backup_proxy_group}' 都不存在，请检查配置")
+                # Fall back to the first selector/url-test group exposed by Mihomo.
+                candidates = [
+                    (name, value) for name, value in data["proxies"].items()
+                    if isinstance(value, dict) and value.get("all")
+                ]
+                if not candidates:
+                    logging.error(f"代理组 '{self.proxy_group}' 不存在且未发现可用代理组")
                     return []
+                self.proxy_group, _ = candidates[0]
+                logging.warning(f"默认代理组不存在，自动使用代理组 '{self.proxy_group}'")
             
             all_nodes = data["proxies"][self.proxy_group]["all"]
             supported_nodes = []
